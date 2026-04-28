@@ -41,6 +41,14 @@ def build_parser() -> argparse.ArgumentParser:
     agent_subparsers = agents.add_subparsers(dest="agent_command", required=True)
     agent_subparsers.add_parser("list", help="List configured worker agents")
 
+    runs = subparsers.add_parser("runs", help="Inspect recorded orchestrator runs")
+    run_subparsers = runs.add_subparsers(dest="run_command", required=True)
+    runs_list = run_subparsers.add_parser("list", help="List recorded runs")
+    runs_list.add_argument("--repo", required=True)
+    runs_show = run_subparsers.add_parser("show", help="Show a recorded run")
+    runs_show.add_argument("--repo", required=True)
+    runs_show.add_argument("--run-id", required=True)
+
     subparsers.add_parser("doctor", help="Check local orchestrator prerequisites")
     return parser
 
@@ -87,6 +95,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "doctor":
         print(json.dumps(run_doctor(registry), ensure_ascii=False))
         return 0
+
+    if args.command == "runs":
+        recorder = RunRecorder(Path(args.repo).resolve() / ".orchestrator")
+        if args.run_command == "list":
+            print(json.dumps({"runs": recorder.list_runs()}, ensure_ascii=False))
+            return 0
+        if args.run_command == "show":
+            print(json.dumps(recorder.read_run(args.run_id), ensure_ascii=False))
+            return 0
+        raise ValueError(f"Unsupported runs command: {args.run_command}")
 
     if args.command != "dispatch":
         raise ValueError(f"Unsupported command: {args.command}")
