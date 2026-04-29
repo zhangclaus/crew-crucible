@@ -29,7 +29,7 @@ from codex_claude_orchestrator.session_recorder import SessionRecorder
 
 
 CommandRunner = Callable[..., CompletedProcess[str]]
-_TERMINAL_BRIDGE_STATUSES = {"accepted", "needs_human"}
+_TERMINAL_BRIDGE_STATUSES = {"accepted", "needs_human", "failed"}
 _TERMINAL_SESSION_STATUSES = {"accepted", "needs_human", "failed", "blocked"}
 
 

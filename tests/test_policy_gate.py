@@ -198,6 +198,23 @@ def test_guard_command_blocks_git_abbreviated_destructive_options(command):
 @pytest.mark.parametrize(
     "command",
     [
+        ["git", "-c", "alias.wipe=reset --hard", "wipe"],
+        ["/usr/bin/git", "-c", "alias.wipe=reset --hard", "wipe"],
+        ["env", "FOO=bar", "git", "-c", "alias.wipe=reset --hard", "wipe"],
+        ["git", "-c", "alias.scrub=clean -fd", "scrub"],
+        ["git", "-c", "alias.scrub=clean -df", "scrub"],
+    ],
+)
+def test_guard_command_blocks_git_one_shot_alias_commands(command):
+    decision = PolicyGate().guard_command(command)
+
+    assert decision.allowed is False
+    assert "blocked command prefix" in decision.reason
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
         ["env", "FOO=bar", "python3", "-m", "pytest", "-q"],
         ["env", "FOO=bar", "/usr/bin/env", "BAR=baz", "python3", "-m", "pytest", "-q"],
         [".venv/bin/python", "-m", "pytest", "-q"],

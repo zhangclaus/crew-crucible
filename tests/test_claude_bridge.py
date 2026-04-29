@@ -946,6 +946,80 @@ def test_bridge_rejects_mutations_when_linked_session_failed(tmp_path: Path):
     assert verification_runner.commands == []
 
 
+def test_bridge_rejects_mutations_after_supervised_follow_up_failure(tmp_path: Path):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    recorder = SessionRecorder(repo_root / ".orchestrator")
+    verification_runner = FakeBridgeVerificationRunner(recorder, [True])
+    responses = [
+        CompletedProcess(
+            ["claude"],
+            0,
+            stdout='{"type":"result","session_id":"claude-session-1","result":"开始。"}',
+            stderr="",
+        ),
+        CompletedProcess(
+            ["claude"],
+            9,
+            stdout='{"type":"result","session_id":"claude-session-1","result":"失败。"}',
+            stderr="boom",
+        ),
+        CompletedProcess(
+            ["claude"],
+            0,
+            stdout='{"type":"result","session_id":"claude-session-1","result":"不应执行。"}',
+            stderr="",
+        ),
+    ]
+    runner_calls = []
+
+    def fake_runner(command, **kwargs):
+        runner_calls.append(list(command))
+        return responses.pop(0)
+
+    bridge = ClaudeBridge(
+        state_root=repo_root / ".orchestrator",
+        runner=fake_runner,
+        session_recorder=recorder,
+        verification_runner=verification_runner,
+        bridge_id_factory=lambda: "bridge-follow-up-failed",
+        turn_id_factory=lambda: f"turn-{len(runner_calls)}",
+        session_id_factory=lambda: "session-follow-up-failed",
+        task_id_factory=lambda: "task-follow-up-failed",
+        trace_id_factory=lambda: f"trace-{len(runner_calls)}",
+        challenge_id_factory=lambda: "challenge-follow-up-failed",
+    )
+
+    bridge.start(repo_root=repo_root, goal="失败后停止", workspace_mode="readonly", supervised=True)
+    failed = bridge.send(repo_root=repo_root, bridge_id=None, message="继续")
+
+    assert failed["bridge"]["status"] == "failed"
+
+    try:
+        bridge.send(repo_root=repo_root, bridge_id=None, message="不应继续")
+    except ValueError as exc:
+        assert "already finalized" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")
+
+    try:
+        bridge.challenge(repo_root=repo_root, bridge_id=None, summary="late", repair_goal="repair")
+    except ValueError as exc:
+        assert "already finalized" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")
+
+    try:
+        bridge.verify(repo_root=repo_root, bridge_id=None, command="pytest -q")
+    except ValueError as exc:
+        assert "already finalized" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")
+
+    assert len(runner_calls) == 2
+    assert verification_runner.commands == []
+
+
 def test_bridge_accept_rejects_blocked_linked_session_without_overwriting_report(tmp_path: Path):
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
