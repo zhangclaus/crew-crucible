@@ -206,9 +206,14 @@ def test_guard_command_blocks_git_abbreviated_destructive_options(command):
         ["env", "FOO=bar", "git", "-c", "alias.wipe=reset --hard", "wipe"],
         ["git", "-c", "alias.scrub=clean -fd", "scrub"],
         ["git", "-c", "alias.scrub=clean -df", "scrub"],
+        ["git", "-c", "include.path=/tmp/evil-gitconfig", "wipe"],
+        ["git", "-cinclude.path=/tmp/evil-gitconfig", "wipe"],
+        ["/usr/bin/git", "-c", "include.path=/tmp/evil-gitconfig", "wipe"],
+        ["env", "FOO=bar", "git", "-c", "include.path=/tmp/evil-gitconfig", "wipe"],
+        ["git", "--config-env=include.path=EVIL_GITCONFIG", "wipe"],
     ],
 )
-def test_guard_command_blocks_git_one_shot_alias_commands(command):
+def test_guard_command_blocks_git_one_shot_config_commands(command):
     decision = PolicyGate().guard_command(command)
 
     assert decision.allowed is False

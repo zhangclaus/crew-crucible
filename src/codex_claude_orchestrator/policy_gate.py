@@ -111,8 +111,8 @@ class PolicyGate:
         return None
 
     def _blocked_git_destructive_command(self, args: list[str]) -> str | None:
-        if self._has_git_one_shot_alias(args):
-            return "git alias"
+        if self._has_git_one_shot_config(args):
+            return "git config"
         for index, arg in enumerate(args):
             remaining_args = args[index + 1 :]
             if arg == "reset" and any(self._is_git_hard_option(option) for option in remaining_args):
@@ -121,24 +121,16 @@ class PolicyGate:
                 return "git clean -fd"
         return None
 
-    def _has_git_one_shot_alias(self, args: list[str]) -> bool:
+    def _has_git_one_shot_config(self, args: list[str]) -> bool:
         for index, arg in enumerate(args):
             if arg == "-c" and index + 1 < len(args):
-                config_key = args[index + 1].split("=", 1)[0].lower()
-                if config_key.startswith("alias."):
-                    return True
-            if arg.startswith("-c"):
-                config_key = arg.removeprefix("-c").split("=", 1)[0].lower()
-                if config_key.startswith("alias."):
-                    return True
+                return True
+            if arg.startswith("-c") and arg != "-C":
+                return True
             if arg == "--config-env" and index + 1 < len(args):
-                config_key = args[index + 1].split("=", 1)[0].lower()
-                if config_key.startswith("alias."):
-                    return True
+                return True
             if arg.startswith("--config-env="):
-                config_key = arg.removeprefix("--config-env=").split("=", 1)[0].lower()
-                if config_key.startswith("alias."):
-                    return True
+                return True
         return False
 
     def _git_clean_removes_directories(self, args: list[str]) -> bool:
