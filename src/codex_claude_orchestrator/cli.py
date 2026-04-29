@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from codex_claude_orchestrator.adapters.claude_cli import ClaudeCliAdapter
 from codex_claude_orchestrator.agent_registry import AgentRegistry
+from codex_claude_orchestrator.claude_window import ClaudeWindowLauncher
 from codex_claude_orchestrator.models import TaskRecord, WorkspaceMode
 from codex_claude_orchestrator.policy_gate import PolicyGate
 from codex_claude_orchestrator.prompt_compiler import PromptCompiler
@@ -111,6 +112,23 @@ def build_parser() -> argparse.ArgumentParser:
     ui.add_argument("--host", default="127.0.0.1")
     ui.add_argument("--port", type=int, default=8765)
 
+    claude = subparsers.add_parser("claude", help="Open direct Claude CLI windows")
+    claude_subparsers = claude.add_subparsers(dest="claude_command", required=True)
+    claude_open = claude_subparsers.add_parser("open", help="Open Claude CLI in a Terminal window")
+    claude_open.add_argument("--repo", required=True)
+    claude_open.add_argument("--goal", required=True)
+    claude_open.add_argument(
+        "--workspace-mode",
+        choices=("readonly", "shared", "isolated"),
+        default="readonly",
+    )
+    claude_open.add_argument("--terminal-app", default="terminal")
+    claude_open.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Create prompt artifacts without opening Terminal",
+    )
+
     term = subparsers.add_parser("term", help="Manage tmux terminal consoles")
     term_subparsers = term.add_subparsers(dest="term_command", required=True)
     term_session = term_subparsers.add_parser("session", help="Run sessions in a tmux console")
@@ -163,6 +181,10 @@ def build_tmux_console() -> TmuxConsole:
     return TmuxConsole()
 
 
+def build_claude_window_launcher() -> ClaudeWindowLauncher:
+    return ClaudeWindowLauncher()
+
+
 def run_doctor(registry: AgentRegistry) -> dict[str, object]:
     python_ok = sys.version_info >= (3, 11)
     claude_path = shutil.which("claude")
@@ -194,6 +216,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "doctor":
         print(json.dumps(run_doctor(registry), ensure_ascii=False))
         return 0
+
+    if args.command == "claude":
+        if args.claude_command == "open":
+            launch = build_claude_window_launcher().open(
+                repo_root=Path(args.repo).resolve(),
+                goal=args.goal,
+                workspace_mode=args.workspace_mode,
+                terminal_app=args.terminal_app,
+                dry_run=args.dry_run,
+            )
+            print(json.dumps(launch.to_dict(), ensure_ascii=False))
+            return 0
+        raise ValueError(f"Unsupported claude command: {args.claude_command}")
 
     if args.command == "term":
         return handle_term_command(args, registry)

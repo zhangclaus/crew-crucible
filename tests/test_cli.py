@@ -39,6 +39,7 @@ def test_build_parser_exposes_v2_session_and_skill_commands():
     assert "skills" in subparsers_action.choices
     assert "ui" in subparsers_action.choices
     assert "term" in subparsers_action.choices
+    assert "claude" in subparsers_action.choices
 
 
 class FakeSupervisor:
@@ -366,6 +367,42 @@ def test_ui_command_starts_visual_console(tmp_path: Path, monkeypatch):
     assert calls[0]["port"] == 9999
 
 
+def test_claude_open_launches_direct_window(tmp_path: Path, monkeypatch):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    fake_launcher = FakeClaudeWindowLauncher()
+
+    monkeypatch.setattr("codex_claude_orchestrator.cli.build_claude_window_launcher", lambda: fake_launcher)
+
+    stdout = StringIO()
+    with redirect_stdout(stdout):
+        exit_code = main(
+            [
+                "claude",
+                "open",
+                "--repo",
+                str(repo_root),
+                "--goal",
+                "Inspect repo",
+                "--workspace-mode",
+                "readonly",
+                "--dry-run",
+            ]
+        )
+
+    payload = json.loads(stdout.getvalue())
+    assert exit_code == 0
+    assert payload["run_id"] == "claude-open-test"
+    assert payload["launched"] is False
+    assert fake_launcher.calls[0] == {
+        "repo_root": repo_root.resolve(),
+        "goal": "Inspect repo",
+        "workspace_mode": "readonly",
+        "terminal_app": "terminal",
+        "dry_run": True,
+    }
+
+
 def test_term_session_start_launches_tmux_console(tmp_path: Path, monkeypatch):
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
@@ -510,6 +547,29 @@ class FakeTmuxConsole:
     def attach(self, name):
         self.attach_calls.append(name)
         return CompletedProcess(["tmux", "attach", "-t", name], 0)
+
+
+class FakeClaudeWindowLauncher:
+    def __init__(self):
+        self.calls = []
+
+    def open(self, **kwargs):
+        self.calls.append(kwargs)
+        return FakeClaudeWindowLaunch()
+
+
+class FakeClaudeWindowLaunch:
+    def to_dict(self):
+        return {
+            "run_id": "claude-open-test",
+            "repo": "/tmp/repo",
+            "prompt_path": "/tmp/repo/.orchestrator/claude-open/claude-open-test/prompt.txt",
+            "script_path": "/tmp/repo/.orchestrator/claude-open/claude-open-test/open.zsh",
+            "transcript_path": "/tmp/repo/.orchestrator/claude-open/claude-open-test/transcript.txt",
+            "terminal_app": "terminal",
+            "launched": False,
+            "open_command": ["osascript", "-e", "..."],
+        }
 
 
 class FakeWorkerResult:
