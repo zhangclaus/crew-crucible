@@ -37,7 +37,7 @@ This plan implements the Codex-in-the-loop control surface only. It does not aut
 - Modify: `src/codex_claude_orchestrator/claude_bridge.py`
 - Modify: `tests/test_claude_bridge.py`
 
-- [ ] **Step 1: Write the failing supervised start test**
+- [x] **Step 1: Write the failing supervised start test**
 
 Append this test to `tests/test_claude_bridge.py`:
 
@@ -100,7 +100,7 @@ Add the imports at the top of `tests/test_claude_bridge.py`:
 from codex_claude_orchestrator.session_recorder import SessionRecorder
 ```
 
-- [ ] **Step 2: Run the focused test to verify it fails**
+- [x] **Step 2: Run the focused test to verify it fails**
 
 Run:
 
@@ -110,7 +110,7 @@ Run:
 
 Expected: FAIL with `TypeError: ClaudeBridge.__init__() got an unexpected keyword argument 'session_recorder'`.
 
-- [ ] **Step 3: Add supervision dependencies and id factories**
+- [x] **Step 3: Add supervision dependencies and id factories**
 
 Modify imports in `src/codex_claude_orchestrator/claude_bridge.py`:
 
@@ -166,7 +166,7 @@ def __init__(
     self._challenge_id_factory = challenge_id_factory or (lambda: f"challenge-{uuid4().hex}")
 ```
 
-- [ ] **Step 4: Add `supervised` to `start` and create the linked session**
+- [x] **Step 4: Add `supervised` to `start` and create the linked session**
 
 Change the `start` signature:
 
@@ -221,7 +221,7 @@ def _create_supervised_session(self, *, repo: Path, goal: str, workspace_mode: s
     return session
 ```
 
-- [ ] **Step 5: Mirror Claude turns into the linked V2 session**
+- [x] **Step 5: Mirror Claude turns into the linked V2 session**
 
 After `turn = self._run_turn(...)` in `start`, before `_advance_record`, add:
 
@@ -310,7 +310,7 @@ def _evaluate_bridge_turn(self, turn: dict[str, Any]) -> EvaluationOutcome:
     )
 ```
 
-- [ ] **Step 6: Update record advancement for supervised metadata**
+- [x] **Step 6: Update record advancement for supervised metadata**
 
 In `_advance_record`, after updating `turn_count`, add:
 
@@ -319,7 +319,7 @@ if updated.get("supervised"):
     updated["latest_turn_id"] = turn["turn_id"]
 ```
 
-- [ ] **Step 7: Run the focused test to verify it passes**
+- [x] **Step 7: Run the focused test to verify it passes**
 
 Run:
 
@@ -329,7 +329,7 @@ Run:
 
 Expected: PASS.
 
-- [ ] **Step 8: Run existing bridge tests**
+- [x] **Step 8: Run existing bridge tests**
 
 Run:
 
@@ -339,7 +339,7 @@ Run:
 
 Expected: PASS.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 Run:
 
@@ -354,7 +354,7 @@ git commit -m "feat: mirror supervised bridge turns"
 - Modify: `src/codex_claude_orchestrator/claude_bridge.py`
 - Modify: `tests/test_claude_bridge.py`
 
-- [ ] **Step 1: Write failing tests for `status` and `verify`**
+- [x] **Step 1: Write failing tests for `status` and `verify`**
 
 Append these tests to `tests/test_claude_bridge.py`:
 
@@ -463,7 +463,7 @@ Add imports:
 from codex_claude_orchestrator.models import VerificationKind, VerificationRecord
 ```
 
-- [ ] **Step 2: Run the focused tests to verify they fail**
+- [x] **Step 2: Run the focused tests to verify they fail**
 
 Run:
 
@@ -476,7 +476,7 @@ Run:
 
 Expected: FAIL with `AttributeError` for missing `status` and `verify`.
 
-- [ ] **Step 3: Implement `status`**
+- [x] **Step 3: Implement `status`**
 
 Add method to `ClaudeBridge`:
 
@@ -525,7 +525,7 @@ def _suggest_next(
     }
 ```
 
-- [ ] **Step 4: Implement `verify`**
+- [x] **Step 4: Implement `verify`**
 
 Add method:
 
@@ -602,7 +602,7 @@ def _append_log_verification(self, bridge_id: str, verification: VerificationRec
     )
 ```
 
-- [ ] **Step 5: Run the focused tests to verify they pass**
+- [x] **Step 5: Run the focused tests to verify they pass**
 
 Run:
 
@@ -615,7 +615,7 @@ Run:
 
 Expected: PASS.
 
-- [ ] **Step 6: Run bridge and verification tests**
+- [x] **Step 6: Run bridge and verification tests**
 
 Run:
 
@@ -625,7 +625,7 @@ Run:
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 Run:
 
@@ -640,7 +640,7 @@ git commit -m "feat: add supervised bridge status and verification"
 - Modify: `src/codex_claude_orchestrator/claude_bridge.py`
 - Modify: `tests/test_claude_bridge.py`
 
-- [ ] **Step 1: Write failing challenge and finalizer tests**
+- [x] **Step 1: Write failing challenge and finalizer tests**
 
 Append these tests to `tests/test_claude_bridge.py`:
 
@@ -738,7 +738,7 @@ def test_bridge_accept_and_needs_human_finalize_supervised_session(tmp_path: Pat
     assert details["final_report"]["final_summary"] == "Need user decision"
 ```
 
-- [ ] **Step 2: Run focused tests to verify they fail**
+- [x] **Step 2: Run focused tests to verify they fail**
 
 Run:
 
@@ -751,7 +751,7 @@ Run:
 
 Expected: FAIL with `AttributeError` for missing `challenge`, `accept`, and `needs_human`.
 
-- [ ] **Step 3: Implement `challenge`**
+- [x] **Step 3: Implement `challenge`**
 
 Add imports in `claude_bridge.py`:
 
@@ -851,7 +851,7 @@ def _append_log_challenge(self, bridge_id: str, challenge: ChallengeRecord) -> N
     )
 ```
 
-- [ ] **Step 4: Implement `accept` and `needs_human`**
+- [x] **Step 4: Implement `accept` and `needs_human`**
 
 Add methods:
 
@@ -907,7 +907,7 @@ def _finalize_supervised_bridge(
     return {"bridge": updated, "session": self._session_recorder.read_session(str(record["session_id"]))["session"]}
 ```
 
-- [ ] **Step 5: Run focused tests to verify they pass**
+- [x] **Step 5: Run focused tests to verify they pass**
 
 Run:
 
@@ -920,7 +920,7 @@ Run:
 
 Expected: PASS.
 
-- [ ] **Step 6: Run all bridge tests**
+- [x] **Step 6: Run all bridge tests**
 
 Run:
 
@@ -930,7 +930,7 @@ Run:
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 Run:
 
@@ -945,7 +945,7 @@ git commit -m "feat: add supervised bridge challenges"
 - Modify: `src/codex_claude_orchestrator/cli.py`
 - Modify: `tests/test_cli.py`
 
-- [ ] **Step 1: Write failing CLI routing test**
+- [x] **Step 1: Write failing CLI routing test**
 
 Replace `FakeClaudeBridge` in `tests/test_cli.py` with methods for the new commands:
 
@@ -1133,11 +1133,11 @@ Update the expected `fake_bridge.calls` list to include these entries:
         },
 ```
 
-- [ ] **Step 2: Write failing CLI parser assertion for `--supervised`**
+- [x] **Step 2: Write failing CLI parser assertion for `--supervised`**
 
 In the start section of `test_claude_bridge_commands_route_to_bridge`, add `--supervised` after `--visual log`. The expected start call already contains `"supervised": True`.
 
-- [ ] **Step 3: Run the CLI test to verify it fails**
+- [x] **Step 3: Run the CLI test to verify it fails**
 
 Run:
 
@@ -1147,7 +1147,7 @@ Run:
 
 Expected: FAIL because the parser does not expose the new commands and `--supervised`.
 
-- [ ] **Step 4: Wire parser arguments**
+- [x] **Step 4: Wire parser arguments**
 
 In `build_parser`, add to `claude_bridge_start`:
 
@@ -1189,7 +1189,7 @@ Add subparsers:
     claude_bridge_needs_human.add_argument("--summary", required=True)
 ```
 
-- [ ] **Step 5: Wire CLI command handling**
+- [x] **Step 5: Wire CLI command handling**
 
 In the `bridge.start(...)` call, pass:
 
@@ -1264,7 +1264,7 @@ Add command branches:
                 return 0
 ```
 
-- [ ] **Step 6: Build supervised bridge dependencies in `build_claude_bridge`**
+- [x] **Step 6: Build supervised bridge dependencies in `build_claude_bridge`**
 
 Replace `build_claude_bridge` with:
 
@@ -1284,7 +1284,7 @@ def build_claude_bridge(repo_root: Path) -> ClaudeBridge:
     )
 ```
 
-- [ ] **Step 7: Run CLI test to verify it passes**
+- [x] **Step 7: Run CLI test to verify it passes**
 
 Run:
 
@@ -1294,7 +1294,7 @@ Run:
 
 Expected: PASS.
 
-- [ ] **Step 8: Run CLI and bridge tests**
+- [x] **Step 8: Run CLI and bridge tests**
 
 Run:
 
@@ -1304,7 +1304,7 @@ Run:
 
 Expected: PASS.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 Run:
 
@@ -1318,7 +1318,7 @@ git commit -m "feat: wire supervised bridge cli"
 **Files:**
 - Modify: `docs/superpowers/plans/2026-04-29-codex-in-loop-claude-bridge-supervision.md`
 
-- [ ] **Step 1: Run targeted test suite**
+- [x] **Step 1: Run targeted test suite**
 
 Run:
 
@@ -1328,7 +1328,7 @@ Run:
 
 Expected: PASS.
 
-- [ ] **Step 2: Run full test suite**
+- [x] **Step 2: Run full test suite**
 
 Run:
 
@@ -1338,7 +1338,7 @@ Run:
 
 Expected: PASS.
 
-- [ ] **Step 3: Smoke-check parser help**
+- [x] **Step 3: Smoke-check parser help**
 
 Run:
 
@@ -1353,11 +1353,11 @@ Run:
 
 Expected: each command exits 0 and prints its usage text.
 
-- [ ] **Step 4: Mark implementation plan tasks complete as they are executed**
+- [x] **Step 4: Mark implementation plan tasks complete as they are executed**
 
 Edit this plan so each completed checkbox reflects the actual implementation state. Keep skipped steps unchecked with a short note in the final response.
 
-- [ ] **Step 5: Commit plan checkbox updates**
+- [x] **Step 5: Commit plan checkbox updates**
 
 Run:
 
