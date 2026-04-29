@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from codex_claude_orchestrator.adapters.claude_cli import ClaudeCliAdapter
 from codex_claude_orchestrator.agent_registry import AgentRegistry
+from codex_claude_orchestrator.bridge_supervisor_loop import BridgeSupervisorLoop
 from codex_claude_orchestrator.claude_bridge import ClaudeBridge
 from codex_claude_orchestrator.claude_window import ClaudeWindowLauncher
 from codex_claude_orchestrator.models import TaskRecord, WorkspaceMode
@@ -183,6 +184,34 @@ def build_parser() -> argparse.ArgumentParser:
     claude_bridge_needs_human.add_argument("--repo", required=True)
     claude_bridge_needs_human.add_argument("--bridge-id", required=False)
     claude_bridge_needs_human.add_argument("--summary", required=True)
+    claude_bridge_supervise = claude_bridge_subparsers.add_parser(
+        "supervise",
+        help="Run the Codex bridge supervisor loop for an existing supervised bridge",
+    )
+    claude_bridge_supervise.add_argument("--repo", required=True)
+    claude_bridge_supervise.add_argument("--bridge-id", required=False)
+    claude_bridge_supervise.add_argument("--verification-command", action="append", default=[])
+    claude_bridge_supervise.add_argument("--max-rounds", type=int, default=3)
+    claude_bridge_supervise.add_argument("--poll-interval", type=float, default=5.0)
+    claude_bridge_run = claude_bridge_subparsers.add_parser(
+        "run",
+        help="Start a supervised Claude bridge and run the Codex supervisor loop",
+    )
+    claude_bridge_run.add_argument("--repo", required=True)
+    claude_bridge_run.add_argument("--goal", required=True)
+    claude_bridge_run.add_argument(
+        "--workspace-mode",
+        choices=("readonly", "shared"),
+        default="readonly",
+    )
+    claude_bridge_run.add_argument(
+        "--visual",
+        choices=("none", "log", "terminal"),
+        default="none",
+    )
+    claude_bridge_run.add_argument("--verification-command", action="append", default=[])
+    claude_bridge_run.add_argument("--max-rounds", type=int, default=3)
+    claude_bridge_run.add_argument("--poll-interval", type=float, default=5.0)
 
     term = subparsers.add_parser("term", help="Manage tmux terminal consoles")
     term_subparsers = term.add_subparsers(dest="term_command", required=True)
@@ -253,6 +282,10 @@ def build_claude_bridge(repo_root: Path) -> ClaudeBridge:
         ),
         result_evaluator=ResultEvaluator(),
     )
+
+
+def build_bridge_supervisor_loop(bridge: ClaudeBridge) -> BridgeSupervisorLoop:
+    return BridgeSupervisorLoop(bridge)
 
 
 def run_doctor(registry: AgentRegistry) -> dict[str, object]:
@@ -392,6 +425,38 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(
                     json.dumps(
                         bridge.needs_human(repo_root=repo_root, bridge_id=args.bridge_id, summary=args.summary),
+                        ensure_ascii=False,
+                    )
+                )
+                return 0
+            if args.claude_bridge_command == "supervise":
+                loop = build_bridge_supervisor_loop(bridge)
+                print(
+                    json.dumps(
+                        loop.supervise(
+                            repo_root=repo_root,
+                            bridge_id=args.bridge_id,
+                            verification_commands=args.verification_command,
+                            max_rounds=args.max_rounds,
+                            poll_interval_seconds=args.poll_interval,
+                        ),
+                        ensure_ascii=False,
+                    )
+                )
+                return 0
+            if args.claude_bridge_command == "run":
+                loop = build_bridge_supervisor_loop(bridge)
+                print(
+                    json.dumps(
+                        loop.run(
+                            repo_root=repo_root,
+                            goal=args.goal,
+                            workspace_mode=args.workspace_mode,
+                            visual=args.visual,
+                            verification_commands=args.verification_command,
+                            max_rounds=args.max_rounds,
+                            poll_interval_seconds=args.poll_interval,
+                        ),
                         ensure_ascii=False,
                     )
                 )

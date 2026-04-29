@@ -596,6 +596,89 @@ def test_claude_bridge_commands_route_to_bridge(tmp_path: Path, monkeypatch):
     ]
 
 
+def test_claude_bridge_supervisor_commands_route_to_loop(tmp_path: Path, monkeypatch):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    fake_bridge = FakeClaudeBridge()
+    fake_loop = FakeBridgeSupervisorLoop()
+
+    monkeypatch.setattr("codex_claude_orchestrator.cli.build_claude_bridge", lambda repo_root: fake_bridge)
+    monkeypatch.setattr("codex_claude_orchestrator.cli.build_bridge_supervisor_loop", lambda bridge: fake_loop)
+
+    stdout = StringIO()
+    with redirect_stdout(stdout):
+        supervise_exit = main(
+            [
+                "claude",
+                "bridge",
+                "supervise",
+                "--repo",
+                str(repo_root),
+                "--bridge-id",
+                "bridge-existing",
+                "--verification-command",
+                "pytest -q",
+                "--max-rounds",
+                "2",
+                "--poll-interval",
+                "0",
+            ]
+        )
+    supervise_payload = json.loads(stdout.getvalue())
+
+    stdout = StringIO()
+    with redirect_stdout(stdout):
+        run_exit = main(
+            [
+                "claude",
+                "bridge",
+                "run",
+                "--repo",
+                str(repo_root),
+                "--goal",
+                "Implement feature",
+                "--workspace-mode",
+                "shared",
+                "--visual",
+                "log",
+                "--verification-command",
+                "pytest -q",
+                "--verification-command",
+                "ruff check .",
+                "--max-rounds",
+                "3",
+                "--poll-interval",
+                "0",
+            ]
+        )
+    run_payload = json.loads(stdout.getvalue())
+
+    assert supervise_exit == 0
+    assert run_exit == 0
+    assert supervise_payload["mode"] == "supervise"
+    assert run_payload["mode"] == "run"
+    assert fake_loop.calls == [
+        {
+            "method": "supervise",
+            "repo_root": repo_root.resolve(),
+            "bridge_id": "bridge-existing",
+            "verification_commands": ["pytest -q"],
+            "max_rounds": 2,
+            "poll_interval_seconds": 0.0,
+        },
+        {
+            "method": "run",
+            "repo_root": repo_root.resolve(),
+            "goal": "Implement feature",
+            "workspace_mode": "shared",
+            "visual": "log",
+            "verification_commands": ["pytest -q", "ruff check ."],
+            "max_rounds": 3,
+            "poll_interval_seconds": 0.0,
+        },
+    ]
+
+
 def test_term_session_start_launches_tmux_console(tmp_path: Path, monkeypatch):
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
@@ -807,6 +890,19 @@ class FakeClaudeBridge:
     def needs_human(self, **kwargs):
         self.calls.append({"method": "needs_human", **kwargs})
         return {"needs_human": True, "summary": kwargs["summary"]}
+
+
+class FakeBridgeSupervisorLoop:
+    def __init__(self):
+        self.calls = []
+
+    def supervise(self, **kwargs):
+        self.calls.append({"method": "supervise", **kwargs})
+        return {"mode": "supervise", "status": "accepted"}
+
+    def run(self, **kwargs):
+        self.calls.append({"method": "run", **kwargs})
+        return {"mode": "run", "status": "accepted"}
 
 
 class FakeWorkerResult:
