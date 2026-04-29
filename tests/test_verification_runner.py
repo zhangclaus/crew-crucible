@@ -1,5 +1,6 @@
 import sys
 from pathlib import Path
+from subprocess import CompletedProcess
 
 from codex_claude_orchestrator.models import SessionRecord
 from codex_claude_orchestrator.policy_gate import PolicyGate
@@ -86,3 +87,40 @@ def test_verification_runner_records_blocked_command_without_executing(tmp_path:
         f"verification/{record.verification_id}/stderr.txt",
         f"verification/{record.verification_id}/stdout.txt",
     ]
+
+
+def test_verification_runner_uses_injected_runner(tmp_path: Path):
+    recorder = SessionRecorder(tmp_path / ".orchestrator")
+    recorder.start_session(
+        SessionRecord(
+            session_id="session-1",
+            root_task_id="task-1",
+            goal="Run injected verification",
+            assigned_agent="codex",
+        )
+    )
+    calls = []
+
+    def fake_runner(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return CompletedProcess(argv, 0, stdout="tmux ok\n", stderr="")
+
+    runner = VerificationRunner(
+        repo_root=tmp_path,
+        session_recorder=recorder,
+        policy_gate=PolicyGate(),
+        runner=fake_runner,
+    )
+
+    record = runner.run(
+        session_id="session-1",
+        turn_id="turn-1",
+        command=f"{sys.executable} -c \"print('tmux ok')\"",
+    )
+
+    assert record.passed is True
+    assert calls[0][0][:2] == [sys.executable, "-c"]
+    assert calls[0][1]["cwd"] == tmp_path
+    assert calls[0][1]["capture_output"] is True
+    assert calls[0][1]["text"] is True
+    assert Path(record.stdout_artifact).read_text(encoding="utf-8") == "tmux ok\n"

@@ -3,11 +3,16 @@ from __future__ import annotations
 import shlex
 import subprocess
 from pathlib import Path
+from subprocess import CompletedProcess
+from typing import Callable
 from uuid import uuid4
 
 from codex_claude_orchestrator.models import VerificationKind, VerificationRecord
 from codex_claude_orchestrator.policy_gate import PolicyGate
 from codex_claude_orchestrator.session_recorder import SessionRecorder
+
+
+VerificationCommandRunner = Callable[..., CompletedProcess[str]]
 
 
 class VerificationRunner:
@@ -17,11 +22,13 @@ class VerificationRunner:
         session_recorder: SessionRecorder,
         policy_gate: PolicyGate,
         timeout_seconds: int = 120,
+        runner: VerificationCommandRunner | None = None,
     ):
         self._repo_root = repo_root
         self._session_recorder = session_recorder
         self._policy_gate = policy_gate
         self._timeout_seconds = timeout_seconds
+        self._runner = runner or subprocess.run
 
     def run(self, session_id: str, turn_id: str, command: str) -> VerificationRecord:
         verification_id = f"verification-{uuid4().hex}"
@@ -49,7 +56,7 @@ class VerificationRunner:
             self._session_recorder.append_verification(session_id, record)
             return record
 
-        result = subprocess.run(
+        result = self._runner(
             argv,
             cwd=self._repo_root,
             capture_output=True,
