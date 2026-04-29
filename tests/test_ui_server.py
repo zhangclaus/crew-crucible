@@ -38,6 +38,7 @@ def test_render_index_html_contains_operational_shell(tmp_path: Path):
     assert "Orchestrator V2 Console" in html
     assert "Session Timeline" in html
     assert "OutputTrace" in html
+    assert "Agent Runs" in html
     assert "Pending Skills" in html
 
 
@@ -57,17 +58,21 @@ def test_ui_routes_serve_index_state_session_and_run_artifact(tmp_path: Path):
     index_type, index = resolve_ui_request(repo_root, "/")
     state_type, state_body = resolve_ui_request(repo_root, "/api/state")
     session_type, session_body = resolve_ui_request(repo_root, "/api/sessions/session-ui")
+    run_type, run_body = resolve_ui_request(repo_root, "/api/runs/run-ui")
     stdout_type, stdout = resolve_ui_request(repo_root, "/api/run-artifacts/run-ui/stdout.txt")
     state = json.loads(state_body)
     session = json.loads(session_body)
+    run = json.loads(run_body)
 
     assert index_type == "text/html; charset=utf-8"
     assert state_type == "application/json; charset=utf-8"
     assert session_type == "application/json; charset=utf-8"
+    assert run_type == "application/json; charset=utf-8"
     assert stdout_type == "text/plain; charset=utf-8"
     assert "Orchestrator V2 Console" in index
     assert state["sessions"][0]["session_id"] == "session-ui"
     assert session["session"]["goal"] == "Visualize session"
+    assert run["run"]["run_id"] == "run-ui"
     assert stdout == '{"summary":"done"}'
 
 

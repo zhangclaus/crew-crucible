@@ -191,6 +191,9 @@ def render_index_html(repo_root: Path) -> str:
       border-bottom: 1px solid var(--line);
       font-weight: 700;
     }}
+    .pane-block + .pane-block {{
+      border-top: 1px solid var(--line);
+    }}
     button {{
       min-height: 30px;
       border: 1px solid #bfc7d5;
@@ -316,8 +319,14 @@ def render_index_html(repo_root: Path) -> str:
   </header>
   <div class="layout">
     <aside>
-      <div class="pane-head"><span>Sessions</span><button id="refresh">Refresh</button></div>
-      <div id="sessions" class="list"></div>
+      <div class="pane-block">
+        <div class="pane-head"><span>Sessions</span><button id="refresh">Refresh</button></div>
+        <div id="sessions" class="list"></div>
+      </div>
+      <div class="pane-block">
+        <div class="pane-head"><span>Agent Runs</span></div>
+        <div id="runs" class="list"></div>
+      </div>
     </aside>
     <main>
       <div class="tabs">
@@ -333,8 +342,10 @@ def render_index_html(repo_root: Path) -> str:
     </section>
   </div>
   <script>
-    const state = {{ sessions: [], skills: [] }};
+    const state = {{ sessions: [], runs: [], skills: [] }};
     let selectedSession = null;
+    let selectedRun = null;
+    let selectedView = "session";
     let selectedTab = "timeline";
 
     const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (ch) => ({{
@@ -345,9 +356,13 @@ def render_index_html(repo_root: Path) -> str:
       const response = await fetch("/api/state");
       const payload = await response.json();
       state.sessions = payload.sessions || [];
+      state.runs = payload.runs || [];
       state.skills = payload.skills || [];
       if (!selectedSession && state.sessions.length) selectedSession = state.sessions[0].session_id;
+      if (!selectedRun && state.runs.length) selectedRun = state.runs[0].run_id;
+      if (!selectedSession && selectedRun) selectedView = "run";
       renderSessions();
+      renderRuns();
       renderSkills();
       await renderMain();
     }}
@@ -359,7 +374,7 @@ def render_index_html(repo_root: Path) -> str:
         return;
       }}
       host.innerHTML = state.sessions.map((session) => `
-        <button class="item ${{session.session_id === selectedSession ? "active" : ""}}" data-session="${{esc(session.session_id)}}">
+        <button class="item ${{selectedView === "session" && session.session_id === selectedSession ? "active" : ""}}" data-session="${{esc(session.session_id)}}">
           <div class="item-title">${{esc(session.goal || session.session_id)}}</div>
           <div class="meta">${{esc(session.status)}} · ${{esc(session.assigned_agent)}} · ${{esc(session.session_id)}}</div>
           <div class="meta">${{esc(session.summary || "")}}</div>
@@ -368,7 +383,33 @@ def render_index_html(repo_root: Path) -> str:
       host.querySelectorAll("[data-session]").forEach((button) => {{
         button.addEventListener("click", async () => {{
           selectedSession = button.dataset.session;
+          selectedView = "session";
           renderSessions();
+          renderRuns();
+          await renderMain();
+        }});
+      }});
+    }}
+
+    function renderRuns() {{
+      const host = document.querySelector("#runs");
+      if (!state.runs.length) {{
+        host.innerHTML = '<div class="meta">No agent runs</div>';
+        return;
+      }}
+      host.innerHTML = state.runs.map((run) => `
+        <button class="item ${{selectedView === "run" && run.run_id === selectedRun ? "active" : ""}}" data-run="${{esc(run.run_id)}}">
+          <div class="item-title">${{esc(run.summary || run.run_id)}}</div>
+          <div class="meta">${{esc(run.status)}} · ${{esc(run.agent)}} · ${{esc(run.run_id)}}</div>
+          <div class="meta">accepted: ${{esc(run.accepted)}}</div>
+        </button>
+      `).join("");
+      host.querySelectorAll("[data-run]").forEach((button) => {{
+        button.addEventListener("click", async () => {{
+          selectedRun = button.dataset.run;
+          selectedView = "run";
+          renderSessions();
+          renderRuns();
           await renderMain();
         }});
       }});
@@ -392,6 +433,16 @@ def render_index_html(repo_root: Path) -> str:
 
     async function renderMain() {{
       const host = document.querySelector("#main");
+      if (selectedView === "run") {{
+        if (!selectedRun) {{
+          host.innerHTML = '<div class="band"><h2>Agent Run</h2><div class="band-body"><div class="meta">No run selected</div></div></div>';
+          return;
+        }}
+        const response = await fetch(`/api/runs/${{encodeURIComponent(selectedRun)}}`);
+        const detail = await response.json();
+        await renderRunDetail(host, detail);
+        return;
+      }}
       if (!selectedSession) {{
         host.innerHTML = '<div class="band"><h2>Session Timeline</h2><div class="band-body"><div class="meta">No session selected</div></div></div>';
         return;
@@ -451,6 +502,54 @@ def render_index_html(repo_root: Path) -> str:
           </div>
         </div>
       `;
+    }}
+
+    async function renderRunDetail(host, detail) {{
+      const task = detail.task || {{}};
+      const run = detail.run || {{}};
+      const artifacts = detail.artifacts || [];
+      const stdout = artifacts.includes("stdout.txt") ? await fetchRunArtifact(run.run_id, "stdout.txt") : "";
+      const stderr = artifacts.includes("stderr.txt") ? await fetchRunArtifact(run.run_id, "stderr.txt") : "";
+      host.innerHTML = `
+        <div class="band">
+          <h2>Agent Run</h2>
+          <div class="band-body">
+            <div class="row"><div class="label">Agent</div><div class="value">${{esc(run.agent)}}</div></div>
+            <div class="row"><div class="label">Status</div><div class="value">${{esc(run.status)}}</div></div>
+            <div class="row"><div class="label">Goal</div><div class="value">${{esc(task.goal)}}</div></div>
+            <div class="row"><div class="label">Task</div><div class="value">${{esc(task.task_id)}} · ${{esc(task.task_type)}}</div></div>
+            <div class="row"><div class="label">Artifacts</div><div class="value">${{esc(artifacts.join(", "))}}</div></div>
+          </div>
+        </div>
+        <div class="band">
+          <h2>Evaluation</h2>
+          <div class="band-body"><pre>${{esc(JSON.stringify(detail.evaluation || {{}}, null, 2))}}</pre></div>
+        </div>
+        <div class="band">
+          <h2>stdout</h2>
+          <div class="band-body"><pre>${{esc(stdout || "No stdout")}}</pre></div>
+        </div>
+        <div class="band">
+          <h2>stderr</h2>
+          <div class="band-body"><pre>${{esc(stderr || "No stderr")}}</pre></div>
+        </div>
+        <div class="band">
+          <h2>Events</h2>
+          <div class="band-body timeline">
+            ${{(detail.events || []).map((event) => `<div class="event"><strong>${{esc(event.event_type)}}</strong><div class="meta">${{esc(JSON.stringify(event.payload || {{}}))}}</div></div>`).join("") || '<div class="meta">No events</div>'}}
+          </div>
+        </div>
+      `;
+    }}
+
+    async function fetchRunArtifact(runId, artifact) {{
+      try {{
+        const response = await fetch(`/api/run-artifacts/${{encodeURIComponent(runId)}}/${{encodeURIComponent(artifact)}}`);
+        if (!response.ok) return "";
+        return await response.text();
+      }} catch {{
+        return "";
+      }}
     }}
 
     function renderVerification(host, detail) {{
