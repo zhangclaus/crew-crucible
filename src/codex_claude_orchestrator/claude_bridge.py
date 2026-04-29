@@ -136,6 +136,7 @@ class ClaudeBridge:
         repo = self._resolve_repo(repo_root)
         resolved_bridge_id = self._resolve_bridge_id(bridge_id)
         record = self._read_record(resolved_bridge_id)
+        self._require_not_finalized(record)
         resume_session_id = record.get("claude_session_id")
         if not resume_session_id and not dry_run:
             raise ValueError(f"bridge {resolved_bridge_id} has no Claude session id")
@@ -202,6 +203,7 @@ class ClaudeBridge:
         resolved_bridge_id = self._resolve_bridge_id(bridge_id)
         record = self._read_record(resolved_bridge_id)
         self._require_supervised(record)
+        self._require_not_finalized(record)
         if self._verification_runner is None:
             raise ValueError("supervised bridge verification runner is not configured")
 
@@ -232,6 +234,7 @@ class ClaudeBridge:
         resolved_bridge_id = self._resolve_bridge_id(bridge_id)
         record = self._read_record(resolved_bridge_id)
         self._require_supervised(record)
+        self._require_not_finalized(record)
         latest_turn_id = str(record.get("latest_turn_id") or "")
         if not latest_turn_id:
             raise ValueError(f"bridge {resolved_bridge_id} has no turn to challenge")
@@ -562,6 +565,11 @@ class ClaudeBridge:
         if not record.get("supervised") or not record.get("session_id"):
             raise ValueError(f"bridge {record['bridge_id']} is not supervised")
 
+    def _require_not_finalized(self, record: dict[str, Any]) -> None:
+        status = str(record.get("status") or "")
+        if status in {"accepted", "needs_human"}:
+            raise ValueError(f"bridge {record['bridge_id']} is already finalized as {status}")
+
     def _require_bridge_turn(self, bridge_id: str, turn_id: str) -> None:
         if not any(turn.get("turn_id") == turn_id for turn in self._read_turns(bridge_id)):
             raise ValueError(f"bridge {bridge_id} has unknown bridge turn: {turn_id}")
@@ -611,18 +619,30 @@ class ClaudeBridge:
         resolved_bridge_id = self._resolve_bridge_id(bridge_id)
         record = self._read_record(resolved_bridge_id)
         self._require_supervised(record)
+        session_payload = self._session_recorder.read_session(str(record["session_id"]))
+        session = session_payload["session"]
         current_status = str(record.get("status") or "")
+        current_session_status = str(session.get("status") or "")
         terminal_statuses = {"accepted", "needs_human"}
-        if current_status == bridge_status:
-            return {
-                "bridge": record,
-                "session": self._session_recorder.read_session(str(record["session_id"]))["session"],
-            }
         if current_status in terminal_statuses:
+            if current_status == bridge_status and current_session_status == status.value:
+                return {"bridge": record, "session": session}
             raise ValueError(
                 f"bridge {resolved_bridge_id} is already finalized as {current_status}; "
                 f"cannot finalize as {bridge_status}"
             )
+        if current_session_status in terminal_statuses:
+            if current_session_status != status.value:
+                raise ValueError(
+                    f"session {record['session_id']} is already finalized as {current_session_status}; "
+                    f"cannot finalize as {status.value}"
+                )
+            updated = dict(record)
+            updated["status"] = bridge_status
+            updated["updated_at"] = utc_now()
+            self._write_record(resolved_bridge_id, updated)
+            self._append_log_status(resolved_bridge_id, f"{bridge_status}: {summary}")
+            return {"bridge": updated, "session": session}
         self._session_recorder.finalize_session(
             str(record["session_id"]),
             status,
