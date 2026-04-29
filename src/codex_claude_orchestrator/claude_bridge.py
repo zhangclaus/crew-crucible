@@ -607,7 +607,7 @@ class ClaudeBridge:
             from_agent="codex",
             to_agent="codex",
             message=verification.command or "",
-            decision="passed" if verification.passed else "failed",
+            decision=self._verification_status(verification),
             summary=verification.summary,
             payload={"verification": verification.to_dict()},
         )

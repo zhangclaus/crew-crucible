@@ -70,7 +70,24 @@ class PolicyGate:
             return command
 
         index = 1
-        while index < len(command) and self._is_env_assignment(command[index]):
+        while index < len(command):
+            arg = command[index]
+            if arg == "--":
+                index += 1
+                break
+            if arg in {"-S", "--split-string"} or arg.startswith("--split-string="):
+                return ["env", "-S"]
+            if arg in {"-i", "--ignore-environment"}:
+                index += 1
+                continue
+            if arg in {"-u", "--unset"}:
+                index += 2
+                continue
+            if arg.startswith("--unset="):
+                index += 1
+                continue
+            if not self._is_env_assignment(arg):
+                break
             index += 1
         return command[index:]
 
@@ -80,6 +97,8 @@ class PolicyGate:
 
         executable = Path(command[0]).name
         args = command[1:]
+        if executable == "env" and args[:1] == ["-S"]:
+            return "env -S"
         if executable in {"sh", "bash", "zsh"}:
             for arg in args:
                 if self._is_shell_inline_flag(arg):

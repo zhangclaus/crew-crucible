@@ -104,6 +104,23 @@ def test_guard_command_blocks_inline_wrapper_variants(command):
 @pytest.mark.parametrize(
     "command",
     [
+        ["env", "-i", "bash", "-lc", "git reset --hard"],
+        ["/usr/bin/env", "--", "sh", "-c", "rm -rf x"],
+        ["env", "-u", "PATH", "node", "-p", "1+1"],
+        ["env", "-S", "bash -lc 'git reset --hard'"],
+        ["env", "FOO=bar", "bash", "-lc", "git reset --hard"],
+    ],
+)
+def test_guard_command_blocks_env_wrapped_inline_commands(command):
+    decision = PolicyGate().guard_command(command)
+
+    assert decision.allowed is False
+    assert "blocked command wrapper" in decision.reason
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
         [".venv/bin/python", "-m", "pytest", "-q"],
         ["python3", "-m", "pytest", "-q"],
     ],

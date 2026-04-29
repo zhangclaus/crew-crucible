@@ -1197,3 +1197,6 @@ def test_bridge_verify_records_blocked_status_for_policy_block(tmp_path: Path):
     snapshot = bridge.status(repo_root=repo_root, bridge_id=None)
     assert snapshot["bridge"]["latest_verification_status"] == "blocked"
     assert snapshot["latest_verification"]["exit_code"] is None
+
+    details = recorder.read_session("session-blocked")
+    assert details["turns"][-1]["decision"] == "blocked"
