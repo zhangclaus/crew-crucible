@@ -28,6 +28,8 @@ from codex_claude_orchestrator.session_recorder import SessionRecorder
 
 
 CommandRunner = Callable[..., CompletedProcess[str]]
+_TERMINAL_BRIDGE_STATUSES = {"accepted", "needs_human"}
+_TERMINAL_SESSION_STATUSES = {"accepted", "needs_human", "failed", "blocked"}
 
 
 class ClaudeBridge:
@@ -566,14 +568,13 @@ class ClaudeBridge:
             raise ValueError(f"bridge {record['bridge_id']} is not supervised")
 
     def _require_not_finalized(self, record: dict[str, Any]) -> None:
-        terminal_statuses = {"accepted", "needs_human"}
         status = str(record.get("status") or "")
-        if status in terminal_statuses:
+        if status in _TERMINAL_BRIDGE_STATUSES:
             raise ValueError(f"bridge {record['bridge_id']} is already finalized as {status}")
         if record.get("supervised") and record.get("session_id"):
             session = self._session_recorder.read_session(str(record["session_id"]))["session"]
             session_status = str(session.get("status") or "")
-            if session_status in terminal_statuses:
+            if session_status in _TERMINAL_SESSION_STATUSES:
                 raise ValueError(
                     f"session {record['session_id']} is already finalized as {session_status}"
                 )
@@ -631,11 +632,10 @@ class ClaudeBridge:
         session = session_payload["session"]
         current_status = str(record.get("status") or "")
         current_session_status = str(session.get("status") or "")
-        terminal_statuses = {"accepted", "needs_human"}
-        if current_status in terminal_statuses:
+        if current_status in _TERMINAL_BRIDGE_STATUSES:
             if current_status == bridge_status and current_session_status == status.value:
                 return {"bridge": record, "session": session}
-            if current_status == bridge_status and current_session_status not in terminal_statuses:
+            if current_status == bridge_status and current_session_status not in _TERMINAL_SESSION_STATUSES:
                 self._session_recorder.finalize_session(
                     str(record["session_id"]),
                     status,
@@ -650,7 +650,7 @@ class ClaudeBridge:
                 f"bridge {resolved_bridge_id} is already finalized as {current_status}; "
                 f"cannot finalize as {bridge_status}"
             )
-        if current_session_status in terminal_statuses:
+        if current_session_status in _TERMINAL_SESSION_STATUSES:
             if current_session_status != status.value:
                 raise ValueError(
                     f"session {record['session_id']} is already finalized as {current_session_status}; "

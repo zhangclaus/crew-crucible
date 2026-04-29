@@ -797,6 +797,119 @@ def test_bridge_rejects_mutations_when_linked_session_is_finalized(tmp_path: Pat
     assert verification_runner.commands == []
 
 
+def test_bridge_rejects_mutations_when_linked_session_failed(tmp_path: Path):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    recorder = SessionRecorder(repo_root / ".orchestrator")
+    verification_runner = FakeBridgeVerificationRunner(recorder, [True])
+    runner_calls = []
+
+    def fake_runner(command, **kwargs):
+        runner_calls.append(list(command))
+        return CompletedProcess(
+            command,
+            0,
+            stdout='{"type":"result","session_id":"claude-session-1","result":"完成。"}',
+            stderr="",
+        )
+
+    bridge = ClaudeBridge(
+        state_root=repo_root / ".orchestrator",
+        runner=fake_runner,
+        session_recorder=recorder,
+        verification_runner=verification_runner,
+        bridge_id_factory=lambda: "bridge-linked-failed",
+        turn_id_factory=lambda: "turn-start",
+        session_id_factory=lambda: "session-linked-failed",
+        task_id_factory=lambda: "task-linked-failed",
+        trace_id_factory=lambda: "trace-linked-failed",
+        challenge_id_factory=lambda: "challenge-linked-failed",
+    )
+
+    bridge.start(repo_root=repo_root, goal="最终确认", workspace_mode="readonly", supervised=True)
+    recorder.finalize_session(
+        "session-linked-failed",
+        SessionStatus.FAILED,
+        "external failed",
+        current_round=1,
+    )
+
+    try:
+        bridge.send(repo_root=repo_root, bridge_id=None, message="继续")
+    except ValueError as exc:
+        assert "already finalized" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")
+
+    try:
+        bridge.challenge(repo_root=repo_root, bridge_id=None, summary="late", repair_goal="repair")
+    except ValueError as exc:
+        assert "already finalized" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")
+
+    try:
+        bridge.verify(repo_root=repo_root, bridge_id=None, command="pytest -q")
+    except ValueError as exc:
+        assert "already finalized" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")
+
+    try:
+        bridge.accept(repo_root=repo_root, bridge_id=None, summary="should not overwrite")
+    except ValueError as exc:
+        assert "already finalized" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")
+
+    details = recorder.read_session("session-linked-failed")
+    assert details["challenges"] == []
+    assert details["final_report"]["final_summary"] == "external failed"
+    assert len(runner_calls) == 1
+    assert verification_runner.commands == []
+
+
+def test_bridge_accept_rejects_blocked_linked_session_without_overwriting_report(tmp_path: Path):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    recorder = SessionRecorder(repo_root / ".orchestrator")
+
+    bridge = ClaudeBridge(
+        state_root=repo_root / ".orchestrator",
+        runner=lambda command, **kwargs: CompletedProcess(
+            command,
+            0,
+            stdout='{"type":"result","session_id":"claude-session-1","result":"完成。"}',
+            stderr="",
+        ),
+        session_recorder=recorder,
+        bridge_id_factory=lambda: "bridge-linked-blocked",
+        turn_id_factory=lambda: "turn-start",
+        session_id_factory=lambda: "session-linked-blocked",
+        task_id_factory=lambda: "task-linked-blocked",
+        trace_id_factory=lambda: "trace-linked-blocked",
+    )
+
+    bridge.start(repo_root=repo_root, goal="最终确认", workspace_mode="readonly", supervised=True)
+    recorder.finalize_session(
+        "session-linked-blocked",
+        SessionStatus.BLOCKED,
+        "external blocked",
+        current_round=1,
+    )
+
+    try:
+        bridge.accept(repo_root=repo_root, bridge_id=None, summary="should not overwrite")
+    except ValueError as exc:
+        assert "already finalized" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")
+
+    details = recorder.read_session("session-linked-blocked")
+    assert details["session"]["status"] == "blocked"
+    assert details["final_report"]["final_summary"] == "external blocked"
+
+
 def test_bridge_finalization_repairs_terminal_bridge_running_session(tmp_path: Path):
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
