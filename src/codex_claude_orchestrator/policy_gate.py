@@ -53,6 +53,10 @@ class PolicyGate:
         return PolicyDecision(allowed=True, reason=None)
 
     def guard_command(self, command: list[str]) -> PolicyDecision:
+        env_wrapper = self._blocked_env_option_wrapper(command)
+        if env_wrapper:
+            return PolicyDecision(allowed=False, reason=f"blocked command wrapper: {env_wrapper}")
+
         effective_command = self._effective_command(command)
         for blocked_prefix in self._blocked_command_prefixes:
             if tuple(effective_command[: len(blocked_prefix)]) == blocked_prefix:
@@ -111,6 +115,20 @@ class PolicyGate:
                     return f"{executable} {arg}"
         if executable in {"ruby", "perl"} and "-e" in args:
             return f"{executable} -e"
+        return None
+
+    def _blocked_env_option_wrapper(self, command: list[str]) -> str | None:
+        if not command or Path(command[0]).name != "env":
+            return None
+
+        for arg in command[1:]:
+            if arg == "--":
+                return None
+            if self._is_env_assignment(arg):
+                continue
+            if arg.startswith("-"):
+                return f"env {arg}"
+            return None
         return None
 
     def _is_shell_inline_flag(self, arg: str) -> bool:

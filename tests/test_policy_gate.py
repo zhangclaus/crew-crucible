@@ -121,6 +121,22 @@ def test_guard_command_blocks_env_wrapped_inline_commands(command):
 @pytest.mark.parametrize(
     "command",
     [
+        ["env", "-P", "/bin:/usr/bin", "bash", "-lc", "git reset --hard"],
+        ["env", "-v", "bash", "-lc", "git reset --hard"],
+        ["env", "-iv", "bash", "-lc", "git reset --hard"],
+        ["env", "-P", "/bin:/usr/bin", "git", "reset", "--hard"],
+    ],
+)
+def test_guard_command_blocks_env_option_wrapped_commands(command):
+    decision = PolicyGate().guard_command(command)
+
+    assert decision.allowed is False
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["env", "FOO=bar", "python3", "-m", "pytest", "-q"],
         [".venv/bin/python", "-m", "pytest", "-q"],
         ["python3", "-m", "pytest", "-q"],
     ],
