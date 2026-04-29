@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from codex_claude_orchestrator.models import WorkspaceAllocation, WorkspaceMode
 from codex_claude_orchestrator.policy_gate import PolicyGate
 
@@ -71,3 +73,36 @@ def test_guard_command_blocks_interpreter_inline_execution_wrappers():
     assert python_decision.allowed is False
     assert "blocked command wrapper" in python_decision.reason
     assert pytest_decision.allowed is True
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["bash", "--noprofile", "-c", "git reset --hard"],
+        ["bash", "-o", "pipefail", "-c", "git reset --hard"],
+        ["sh", "-ec", "rm -rf x"],
+        ["python3", "-I", "-c", "print('x')"],
+        ["node", "--eval", "console.log('x')"],
+        ["node", "--eval=console.log('x')"],
+        ["ruby", "-W0", "-e", "puts 'x'"],
+        ["perl", "-Ilib", "-e", "print 'x'"],
+    ],
+)
+def test_guard_command_blocks_inline_wrapper_variants(command):
+    decision = PolicyGate().guard_command(command)
+
+    assert decision.allowed is False
+    assert "blocked command wrapper" in decision.reason
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        [".venv/bin/python", "-m", "pytest", "-q"],
+        ["python3", "-m", "pytest", "-q"],
+    ],
+)
+def test_guard_command_allows_python_module_execution(command):
+    decision = PolicyGate().guard_command(command)
+
+    assert decision.allowed is True

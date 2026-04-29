@@ -69,16 +69,27 @@ class PolicyGate:
             return None
 
         executable = Path(command[0]).name
-        flag = command[1]
-        if executable in {"sh", "bash", "zsh"} and flag in {"-c", "-lc"}:
-            return f"{executable} {flag}"
-        if self._is_python_executable(executable) and flag == "-c":
-            return f"{executable} {flag}"
-        if executable == "node" and flag == "-e":
-            return f"{executable} {flag}"
-        if executable in {"ruby", "perl"} and flag == "-e":
-            return f"{executable} {flag}"
+        args = command[1:]
+        if executable in {"sh", "bash", "zsh"}:
+            for arg in args:
+                if self._is_shell_inline_flag(arg):
+                    return f"{executable} {arg}"
+        if self._is_python_executable(executable) and "-c" in args:
+            return f"{executable} -c"
+        if executable == "node":
+            for arg in args:
+                if arg in {"-e", "--eval"} or arg.startswith("--eval="):
+                    return f"{executable} {arg}"
+        if executable in {"ruby", "perl"} and "-e" in args:
+            return f"{executable} -e"
         return None
+
+    def _is_shell_inline_flag(self, arg: str) -> bool:
+        if arg in {"-c", "--command"}:
+            return True
+        if not arg.startswith("-") or arg.startswith("--"):
+            return False
+        return "c" in arg[1:]
 
     def _is_python_executable(self, executable: str) -> bool:
         if executable in {"python", "python3"}:
