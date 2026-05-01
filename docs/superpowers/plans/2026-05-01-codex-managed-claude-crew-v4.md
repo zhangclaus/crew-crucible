@@ -220,6 +220,8 @@ git commit -m "feat: add v4 agent event model"
 - Modify: `src/codex_claude_orchestrator/v4/event_store.py`
 - Modify: `tests/v4/test_event_store.py`
 
+**Execution correction:** `list_by_turn(turn_id)` must return events in append chronology across streams, not lexicographic `stream_id, sequence` order. V4 uses per-stream `sequence` for `list_stream()` and global SQLite append order for turn lifecycle reconstruction. `append()` must also use one write transaction (`BEGIN IMMEDIATE`) for idempotency lookup, sequence allocation, and insert, with explicit connection closing.
+
 - [ ] **Step 1: Add failing event store tests**
 
 Append to `tests/v4/test_event_store.py`:
@@ -281,6 +283,14 @@ def test_event_store_lists_events_after_sequence(tmp_path: Path):
     second = store.append(stream_id="crew-1", type="worker.spawned")
 
     assert [event.type for event in store.list_stream("crew-1", after_sequence=1)] == [second.type]
+
+
+def test_event_store_list_by_turn_preserves_append_order_across_streams(tmp_path: Path):
+    store = SQLiteEventStore(tmp_path / "events.sqlite3")
+    first = store.append(stream_id="z-stream", type="turn.requested", turn_id="turn-1")
+    second = store.append(stream_id="a-stream", type="turn.delivered", turn_id="turn-1")
+
+    assert [event.event_id for event in store.list_by_turn("turn-1")] == [first.event_id, second.event_id]
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -384,7 +394,7 @@ class SQLiteEventStore:
     def list_by_turn(self, turn_id: str) -> list[AgentEvent]:
         with self._connect() as db:
             rows = db.execute(
-                "select * from events where turn_id = ? order by stream_id asc, sequence asc",
+                "select * from events where turn_id = ? order by rowid asc",
                 (turn_id,),
             ).fetchall()
         return [self._row_to_event(row) for row in rows]
