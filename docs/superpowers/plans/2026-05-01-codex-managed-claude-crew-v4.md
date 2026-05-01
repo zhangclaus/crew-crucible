@@ -1815,6 +1815,14 @@ git commit -m "feat: add v4 gate event bridge"
 
 ## Task 13: Workflow Engine Skeleton
 
+**Correction note from Task 12 review:** The original Task 12 sample creates `AgentEvent`
+objects with `stream_id=crew_id` and `sequence=1`. That shape is not safe to append to
+`SQLiteEventStore`, because the store owns per-stream sequence assignment and enforces
+`UNIQUE(stream_id, sequence)`. The Task 12 implementation should therefore support a
+store-backed mode that appends gate events through `SQLiteEventStore.append(...)` with
+stable idempotency keys, while any no-store builder output must be treated as detached
+event/template data rather than a crew-stream event ready for insertion.
+
 **Files:**
 - Create: `src/codex_claude_orchestrator/v4/workflow.py`
 - Modify: `tests/v4/test_workflow.py`
