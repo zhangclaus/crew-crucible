@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from subprocess import CompletedProcess
 
+import pytest
+
 from codex_claude_orchestrator.cli import main
 from codex_claude_orchestrator.core.models import (
     EvaluationOutcome,
@@ -1366,3 +1368,30 @@ def test_cli_crew_events_lists_v4_events(tmp_path):
 
     assert result == 0
     assert "crew.started" in stdout.getvalue()
+
+
+def test_cli_crew_events_without_v4_db_is_read_only(tmp_path):
+    from codex_claude_orchestrator.cli import main
+
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+
+    stdout = StringIO()
+    with redirect_stdout(stdout):
+        result = main(["crew", "events", "--repo", str(repo_root), "--crew", "crew-1"])
+
+    assert result == 0
+    assert json.loads(stdout.getvalue()) == []
+    assert not (repo_root / ".orchestrator").exists()
+    assert not (repo_root / ".orchestrator" / "v4" / "events.sqlite3").exists()
+
+
+def test_cli_crew_events_missing_repo_does_not_create_state(tmp_path):
+    from codex_claude_orchestrator.cli import main
+
+    repo_root = tmp_path / "missing"
+
+    with pytest.raises(ValueError, match=f"repo does not exist: {repo_root.resolve()}"):
+        main(["crew", "events", "--repo", str(repo_root), "--crew", "crew-1"])
+
+    assert not repo_root.exists()

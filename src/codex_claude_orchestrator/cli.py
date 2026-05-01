@@ -769,7 +769,13 @@ def resolve_root_command(args: argparse.Namespace) -> str:
 def handle_crew_command(args) -> int:
     repo_root = Path(args.repo).resolve()
     if args.crew_command == "events":
-        event_store = SQLiteEventStore(repo_root / ".orchestrator" / "v4" / "events.sqlite3")
+        if not repo_root.exists():
+            raise ValueError(f"repo does not exist: {repo_root}")
+        event_store_path = repo_root / ".orchestrator" / "v4" / "events.sqlite3"
+        if not event_store_path.exists():
+            print(json.dumps([], ensure_ascii=False))
+            return 0
+        event_store = SQLiteEventStore(event_store_path)
         print(json.dumps([event.to_dict() for event in event_store.list_stream(args.crew)], ensure_ascii=False))
         return 0
 
