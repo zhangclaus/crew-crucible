@@ -5,6 +5,7 @@ from codex_claude_orchestrator.crew.readiness import ReadinessReport
 from codex_claude_orchestrator.crew.review_verdict import ReviewVerdict
 from codex_claude_orchestrator.v4.event_store import SQLiteEventStore
 from codex_claude_orchestrator.v4.gates import GateEventBuilder
+from codex_claude_orchestrator.v4.workflow import V4WorkflowEngine
 
 
 def test_gate_event_builder_builds_scope_event_payload():
@@ -131,3 +132,29 @@ def test_readiness_event_payload_uses_method_round_and_worker_ids():
 
     assert event.payload["round_id"] == "round-1"
     assert event.payload["worker_id"] == "worker-1"
+
+
+def test_workflow_engine_starts_crew_once(tmp_path: Path):
+    store = SQLiteEventStore(tmp_path / "events.sqlite3")
+    engine = V4WorkflowEngine(event_store=store)
+
+    first = engine.start_crew(crew_id="crew-1", goal="Fix tests")
+    second = engine.start_crew(crew_id="crew-1", goal="Fix tests")
+
+    assert first.event_id == second.event_id
+    assert [event.type for event in store.list_stream("crew-1")] == ["crew.started"]
+
+
+def test_workflow_engine_records_human_required(tmp_path: Path):
+    store = SQLiteEventStore(tmp_path / "events.sqlite3")
+    engine = V4WorkflowEngine(event_store=store)
+
+    event = engine.require_human(
+        crew_id="crew-1",
+        reason="review verdict unknown",
+        evidence_refs=["review.json"],
+    )
+
+    assert event.type == "human.required"
+    assert event.payload["reason"] == "review verdict unknown"
+    assert event.artifact_refs == ["review.json"]
