@@ -12,7 +12,7 @@ class Reconciler:
         self._events = event_store
 
     def reconcile_turn(self, crew_id: str, turn_id: str) -> AgentEvent | None:
-        events = self._events.list_by_turn(turn_id)
+        events = [event for event in self._events.list_by_turn(turn_id) if event.crew_id == crew_id]
         if any(event.type in TERMINAL_TURN_EVENTS for event in events):
             return None
         delivered = next((event for event in events if event.type == "turn.delivered"), None)

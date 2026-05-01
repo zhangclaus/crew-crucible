@@ -23,3 +23,32 @@ def test_reconciler_does_not_duplicate_existing_completion(tmp_path: Path):
     event = Reconciler(event_store=store).reconcile_turn("crew-1", "turn-1")
 
     assert event is None
+
+
+def test_reconciler_ignores_other_crew_terminal_event_for_same_turn_id(tmp_path: Path):
+    store = SQLiteEventStore(tmp_path / "events.sqlite3")
+    store.append(stream_id="crew-1", type="turn.delivered", crew_id="crew-1", worker_id="worker-1", turn_id="turn-1")
+    store.append(stream_id="crew-2", type="turn.completed", crew_id="crew-2", worker_id="worker-2", turn_id="turn-1")
+
+    event = Reconciler(event_store=store).reconcile_turn("crew-1", "turn-1")
+
+    assert event is not None
+    assert event.type == "turn.inconclusive"
+    assert event.crew_id == "crew-1"
+    assert event.worker_id == "worker-1"
+
+
+def test_reconciler_ignores_other_crew_delivered_event_for_same_turn_id(tmp_path: Path):
+    store = SQLiteEventStore(tmp_path / "events.sqlite3")
+    store.append(
+        stream_id="crew-2",
+        type="turn.delivered",
+        crew_id="crew-2",
+        worker_id="worker-2",
+        turn_id="turn-1",
+        artifact_refs=["artifact-from-crew-2"],
+    )
+
+    event = Reconciler(event_store=store).reconcile_turn("crew-1", "turn-1")
+
+    assert event is None
