@@ -18,6 +18,9 @@ orchestrator = "codex_claude_orchestrator.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+codex_claude_orchestrator = ["agent_packs/builtin/capabilities/*.md", "agent_packs/builtin/protocols/*.md"]
+
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]

@@ -5,8 +5,8 @@ import subprocess
 from collections.abc import Callable
 from subprocess import CompletedProcess
 
-from codex_claude_orchestrator.models import WorkerResult, WorkspaceAllocation
-from codex_claude_orchestrator.prompt_compiler import CompiledPrompt
+from codex_claude_orchestrator.core.models import WorkerResult, WorkspaceAllocation
+from codex_claude_orchestrator.session.prompt_compiler import CompiledPrompt
 
 
 Runner = Callable[..., CompletedProcess[str]]

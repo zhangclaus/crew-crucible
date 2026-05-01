@@ -2,8 +2,8 @@ from pathlib import Path
 from subprocess import CompletedProcess
 
 from codex_claude_orchestrator.adapters.claude_cli import ClaudeCliAdapter
-from codex_claude_orchestrator.models import WorkspaceAllocation, WorkspaceMode
-from codex_claude_orchestrator.prompt_compiler import CompiledPrompt
+from codex_claude_orchestrator.core.models import WorkspaceAllocation, WorkspaceMode
+from codex_claude_orchestrator.session.prompt_compiler import CompiledPrompt
 
 
 def test_execute_uses_json_schema_and_parses_structured_output(tmp_path: Path):
