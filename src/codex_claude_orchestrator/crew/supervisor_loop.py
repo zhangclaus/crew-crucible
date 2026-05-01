@@ -9,6 +9,7 @@ from codex_claude_orchestrator.crew.gates import GateResult, WriteScopeGate
 from codex_claude_orchestrator.crew.models import DecisionAction, DecisionActionType, WorkerRole
 from codex_claude_orchestrator.crew.readiness import CrewReadinessEvaluator
 from codex_claude_orchestrator.crew.review_verdict import ReviewVerdict, ReviewVerdictParser
+from codex_claude_orchestrator.runtime.marker_policy import MarkerObservationPolicy
 from codex_claude_orchestrator.workers.selection import WorkerSelectionPolicy
 
 
@@ -25,6 +26,7 @@ class CrewSupervisorLoop:
         scope_gate: WriteScopeGate | None = None,
         readiness_evaluator: CrewReadinessEvaluator | None = None,
         review_parser: ReviewVerdictParser | None = None,
+        marker_policy: MarkerObservationPolicy | None = None,
     ):
         self._controller = controller
         self._poll_interval_seconds = poll_interval_seconds
@@ -32,6 +34,7 @@ class CrewSupervisorLoop:
         self._scope_gate = scope_gate or WriteScopeGate()
         self._readiness_evaluator = readiness_evaluator or CrewReadinessEvaluator()
         self._review_parser = review_parser or ReviewVerdictParser()
+        self._marker_policy = marker_policy or MarkerObservationPolicy()
 
     def run(
         self,
@@ -155,6 +158,7 @@ class CrewSupervisorLoop:
                             "round": round_index,
                             "worker_id": source_worker["worker_id"],
                             "marker_seen": scout_observation.get("marker_seen", False),
+                            "reason": scout_observation.get("reason", ""),
                         }
                     )
                     if not scout_observation.get("marker_seen", False):
@@ -190,6 +194,7 @@ class CrewSupervisorLoop:
                     "round": round_index,
                     "worker_id": source_worker["worker_id"],
                     "marker_seen": observation.get("marker_seen", False),
+                    "reason": observation.get("reason", ""),
                 }
             )
             if not observation.get("marker_seen", False):
@@ -326,6 +331,7 @@ class CrewSupervisorLoop:
                         "round": round_index,
                         "worker_id": auditor["worker_id"],
                         "marker_seen": auditor_observation.get("marker_seen", False),
+                        "reason": auditor_observation.get("reason", ""),
                     }
                 )
                 if not auditor_observation.get("marker_seen", False):
@@ -439,6 +445,7 @@ class CrewSupervisorLoop:
                             "round": round_index,
                             "worker_id": browser_worker["worker_id"],
                             "marker_seen": browser_observation.get("marker_seen", False),
+                            "reason": browser_observation.get("reason", ""),
                         }
                     )
                     if not browser_observation.get("marker_seen", False):
@@ -667,13 +674,25 @@ class CrewSupervisorLoop:
     ) -> dict[str, Any]:
         last_observation: dict[str, Any] = {"marker_seen": False, "snapshot": ""}
         for attempt in range(self._max_observe_attempts):
-            last_observation = self._controller.observe_worker(
+            raw_observation = self._controller.observe_worker(
                 repo_root=repo_root,
                 crew_id=crew_id,
                 worker_id=worker_id,
                 lines=200,
                 turn_marker=turn_marker,
             )
+            policy_observation = self._marker_policy.evaluate(
+                snapshot=raw_observation.get("snapshot", ""),
+                expected_marker=turn_marker or raw_observation.get("marker", ""),
+                transcript_text=raw_observation.get("transcript", ""),
+                transcript_artifact=raw_observation.get("transcript_artifact", ""),
+                contract_marker=f"<<<CODEX_TURN_DONE crew={crew_id} contract=source_write>>>",
+            )
+            last_observation = {
+                **raw_observation,
+                **policy_observation.to_dict(),
+                "marker_seen": policy_observation.marker_seen,
+            }
             if last_observation.get("marker_seen", False):
                 return last_observation
             if interval > 0 and attempt + 1 < self._max_observe_attempts:
@@ -864,7 +883,14 @@ class CrewSupervisorLoop:
         return f"<<<CODEX_TURN_DONE crew={crew_id} worker={worker_id} phase={phase} round={round_index}>>>"
 
     def _waiting_result(self, crew_id: str, worker_id: str, events: list[dict[str, Any]]) -> dict[str, Any]:
-        return {"crew_id": crew_id, "status": "waiting_for_worker", "worker_id": worker_id, "events": events}
+        reason = events[-1].get("reason") if events else None
+        return {
+            "crew_id": crew_id,
+            "status": "waiting_for_worker",
+            "worker_id": worker_id,
+            "reason": reason or "expected marker not found",
+            "events": events,
+        }
 
     def _append_known_pitfall_if_supported(
         self,

@@ -216,6 +216,34 @@ def test_supervisor_loop_dynamic_run_spawns_source_contract_without_static_roste
     assert controller.snapshots[-1]["last_decision"]["action_type"] == "accept_ready"
 
 
+def test_supervisor_loop_waiting_result_includes_marker_mismatch_reason(tmp_path: Path):
+    controller = FakeController([])
+    controller.status_payload = {"crew": {"crew_id": "crew-1", "root_goal": "Fix tests"}, "workers": []}
+
+    def observe_contract_marker_only(**kwargs):
+        controller.observed.append(kwargs)
+        return {
+            "snapshot": "<<<CODEX_TURN_DONE crew=crew-1 contract=source_write>>>",
+            "marker_seen": False,
+            "marker": kwargs["turn_marker"],
+            "transcript_artifact": "workers/worker-source/transcript.txt",
+        }
+
+    controller.observe_worker = observe_contract_marker_only
+    loop = CrewSupervisorLoop(controller=controller, poll_interval_seconds=0, max_observe_attempts=1)
+
+    result = loop.run(
+        repo_root=tmp_path,
+        goal="Fix tests",
+        verification_commands=["pytest -q"],
+        max_rounds=1,
+        spawn_policy="dynamic",
+    )
+
+    assert result["status"] == "waiting_for_worker"
+    assert result["reason"] == "contract marker found but expected turn marker was missing"
+
+
 def test_supervisor_loop_dynamic_ignores_legacy_implementer_without_source_write_authority(tmp_path: Path):
     controller = FakeController([{"passed": True, "summary": "command passed: exit code 0"}])
     controller.status_payload = {
