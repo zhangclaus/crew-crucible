@@ -57,7 +57,7 @@ def test_ui_state_includes_v4_event_summary(tmp_path: Path):
     assert state["v4"]["crews"][0]["turn_count"] == 1
 
 
-def test_build_v4_ui_state_without_event_db_has_no_side_effects(tmp_path: Path):
+def test_build_v4_ui_state_without_db_is_read_only(tmp_path: Path):
     state = build_v4_ui_state(tmp_path)
 
     assert state == {"event_count": 0, "crews": []}
