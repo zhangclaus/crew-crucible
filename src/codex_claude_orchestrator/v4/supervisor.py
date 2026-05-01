@@ -123,6 +123,8 @@ class V4Supervisor:
 
     def _terminal_result(self, *, crew_id: str, turn: TurnEnvelope) -> dict[str, str] | None:
         for event in reversed(self._events.list_by_turn(turn.turn_id)):
+            if event.crew_id != crew_id:
+                continue
             if event.type == "turn.completed":
                 return {
                     "crew_id": crew_id,
