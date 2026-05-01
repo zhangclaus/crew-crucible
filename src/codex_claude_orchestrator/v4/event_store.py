@@ -127,6 +127,16 @@ class SQLiteEventStore:
             ).fetchall()
         return [self._row_to_event(row) for row in rows]
 
+    def list_all(self) -> list[AgentEvent]:
+        with self._connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM events
+                ORDER BY rowid ASC
+                """
+            ).fetchall()
+        return [self._row_to_event(row) for row in rows]
+
     def get_by_idempotency_key(self, idempotency_key: str) -> AgentEvent | None:
         if not idempotency_key:
             return None
