@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from uuid import uuid4
 
 from codex_claude_orchestrator.state.blackboard import BlackboardStore
@@ -238,6 +238,7 @@ class CrewController:
         )
 
     def write_json_artifact(self, *, crew_id: str, artifact_name: str, payload) -> str:
+        self._validate_artifact_name(artifact_name)
         self._recorder.write_json_artifact(crew_id, artifact_name, payload)
         return artifact_name
 
@@ -269,8 +270,11 @@ class CrewController:
 
     def record_decision(self, *, crew_id: str, action) -> dict:
         payload = action.to_dict() if hasattr(action, "to_dict") else dict(action)
+        if payload.get("crew_id") not in {None, crew_id}:
+            raise ValueError(f"decision crew_id mismatch: {payload.get('crew_id')} != {crew_id}")
         if hasattr(action, "to_dict"):
             self._recorder.append_decision(crew_id, action)
+            return payload
         else:
             from codex_claude_orchestrator.crew.models import DecisionAction, DecisionActionType, WorkerContract
 
@@ -298,7 +302,7 @@ class CrewController:
                 )
             decision = DecisionAction(
                 action_id=payload["action_id"],
-                crew_id=payload["crew_id"],
+                crew_id=crew_id,
                 action_type=DecisionActionType(payload["action_type"]),
                 reason=payload["reason"],
                 priority=payload.get("priority", 50),
@@ -309,7 +313,12 @@ class CrewController:
                 created_at=payload.get("created_at"),
             )
             self._recorder.append_decision(crew_id, decision)
-        return payload
+            return decision.to_dict()
+
+    def _validate_artifact_name(self, artifact_name: str) -> None:
+        path = PurePosixPath(artifact_name)
+        if not artifact_name or path.is_absolute() or ".." in path.parts:
+            raise ValueError(f"unsafe artifact name: {artifact_name}")
 
     def resume_context(self, *, crew_id: str) -> dict:
         details = self._recorder.read_crew(crew_id)

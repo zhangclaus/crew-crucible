@@ -373,6 +373,28 @@ def test_controller_records_gate_artifacts_and_blackboard_entries(tmp_path: Path
     assert details["blackboard"][-1]["evidence_refs"] == ["gates/round-1/write_scope.json"]
 
 
+def test_controller_rejects_unsafe_artifact_names(tmp_path: Path):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    recorder = CrewRecorder(repo_root / ".orchestrator")
+    controller = CrewController(
+        recorder=recorder,
+        blackboard=BlackboardStore(recorder),
+        task_graph=TaskGraphPlanner(),
+        worker_pool=FakeWorkerPool(),
+        crew_id_factory=lambda: "crew-1",
+    )
+    crew = controller.start_dynamic(repo_root=repo_root, goal="Harden dynamic crew")
+
+    for artifact_name in ("../crew.json", "/tmp/x.json", ""):
+        with pytest.raises(ValueError, match="unsafe artifact name"):
+            controller.write_json_artifact(
+                crew_id=crew.crew_id,
+                artifact_name=artifact_name,
+                payload={"status": "pass"},
+            )
+
+
 def test_controller_records_decision_action_to_decisions_jsonl(tmp_path: Path):
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
@@ -397,6 +419,61 @@ def test_controller_records_decision_action_to_decisions_jsonl(tmp_path: Path):
 
     assert recorded["action_type"] == "accept_ready"
     assert details["decisions"] == [recorded]
+
+
+def test_controller_record_decision_dict_returns_normalized_payload(tmp_path: Path):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    recorder = CrewRecorder(repo_root / ".orchestrator")
+    controller = CrewController(
+        recorder=recorder,
+        blackboard=BlackboardStore(recorder),
+        task_graph=TaskGraphPlanner(),
+        worker_pool=FakeWorkerPool(),
+        crew_id_factory=lambda: "crew-1",
+    )
+    crew = controller.start_dynamic(repo_root=repo_root, goal="Fix failing tests")
+
+    recorded = controller.record_decision(
+        crew_id=crew.crew_id,
+        action={
+            "action_id": "decision-1",
+            "crew_id": crew.crew_id,
+            "action_type": DecisionActionType.ACCEPT_READY,
+            "reason": "verification passed",
+        },
+    )
+    details = recorder.read_crew(crew.crew_id)
+
+    assert recorded["crew_id"] == "crew-1"
+    assert details["decisions"][0]["crew_id"] == "crew-1"
+    assert recorded["action_type"] == "accept_ready"
+    assert details["decisions"] == [recorded]
+
+
+def test_controller_record_decision_rejects_mismatched_crew_id(tmp_path: Path):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    recorder = CrewRecorder(repo_root / ".orchestrator")
+    controller = CrewController(
+        recorder=recorder,
+        blackboard=BlackboardStore(recorder),
+        task_graph=TaskGraphPlanner(),
+        worker_pool=FakeWorkerPool(),
+        crew_id_factory=lambda: "crew-1",
+    )
+    crew = controller.start_dynamic(repo_root=repo_root, goal="Fix failing tests")
+
+    with pytest.raises(ValueError, match="decision crew_id mismatch"):
+        controller.record_decision(
+            crew_id=crew.crew_id,
+            action={
+                "action_id": "decision-1",
+                "crew_id": "crew-2",
+                "action_type": "accept_ready",
+                "reason": "verification passed",
+            },
+        )
 
 
 def test_controller_resume_context_collects_snapshot_and_replay_inputs(tmp_path: Path):
