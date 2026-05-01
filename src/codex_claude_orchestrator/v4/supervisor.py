@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+from typing import Any
+
 from codex_claude_orchestrator.v4.artifacts import ArtifactStore
 from codex_claude_orchestrator.v4.completion import CompletionDetector
 from codex_claude_orchestrator.v4.event_store import SQLiteEventStore
+from codex_claude_orchestrator.v4.events import normalize
 from codex_claude_orchestrator.v4.runtime import RuntimeAdapter, RuntimeEvent, TurnEnvelope
 from codex_claude_orchestrator.v4.turns import TurnService
 from codex_claude_orchestrator.v4.workflow import V4WorkflowEngine
@@ -46,10 +51,24 @@ class V4Supervisor:
             expected_marker=expected_marker,
         )
 
-        self._turns.request_and_deliver(turn)
+        delivery_result = self._turns.request_and_deliver(turn)
+        if not delivery_result.delivered:
+            status = (
+                "waiting"
+                if delivery_result.reason == "delivery already in progress"
+                else "delivery_failed"
+            )
+            return {
+                "crew_id": crew_id,
+                "status": status,
+                "turn_id": turn.turn_id,
+                "reason": delivery_result.reason,
+            }
+
         runtime_events = [
-            self._current_turn_event(turn, runtime_event)
+            runtime_event
             for runtime_event in self._adapter.watch_turn(turn)
+            if self._is_current_turn_event(turn, runtime_event)
         ]
         for index, runtime_event in enumerate(runtime_events):
             self._events.append(
@@ -57,8 +76,11 @@ class V4Supervisor:
                 type=runtime_event.type,
                 crew_id=crew_id,
                 worker_id=runtime_event.worker_id,
-                turn_id=turn.turn_id,
-                idempotency_key=f"{crew_id}/{turn.turn_id}/{runtime_event.type}/{index}",
+                turn_id=runtime_event.turn_id,
+                idempotency_key=(
+                    f"{crew_id}/{turn.turn_id}/{runtime_event.type}/{index}/"
+                    f"{_runtime_event_digest(runtime_event, index=index)}"
+                ),
                 payload=runtime_event.payload,
                 artifact_refs=runtime_event.artifact_refs,
             )
@@ -84,14 +106,20 @@ class V4Supervisor:
         }
 
     @staticmethod
-    def _current_turn_event(turn: TurnEnvelope, event: RuntimeEvent) -> RuntimeEvent:
-        if event.turn_id == turn.turn_id and event.worker_id == turn.worker_id:
-            return event
+    def _is_current_turn_event(turn: TurnEnvelope, event: RuntimeEvent) -> bool:
+        return event.turn_id == turn.turn_id and event.worker_id == turn.worker_id
 
-        return RuntimeEvent(
-            type=event.type,
-            turn_id=turn.turn_id,
-            worker_id=turn.worker_id,
-            payload=event.payload,
-            artifact_refs=event.artifact_refs,
-        )
+
+def _runtime_event_digest(event: RuntimeEvent, *, index: int) -> str:
+    content: dict[str, Any] = {
+        "index": index,
+        "type": event.type,
+        "payload": event.payload,
+        "artifact_refs": event.artifact_refs,
+    }
+    encoded = json.dumps(
+        normalize(content),
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
