@@ -145,6 +145,24 @@ def test_workflow_engine_starts_crew_once(tmp_path: Path):
     assert [event.type for event in store.list_stream("crew-1")] == ["crew.started"]
 
 
+def test_workflow_engine_rejects_changed_crew_goal(tmp_path: Path):
+    store = SQLiteEventStore(tmp_path / "events.sqlite3")
+    engine = V4WorkflowEngine(event_store=store)
+
+    engine.start_crew(crew_id="crew-1", goal="Fix tests")
+
+    try:
+        engine.start_crew(crew_id="crew-1", goal="Ship feature")
+    except ValueError as exc:
+        assert str(exc) == "crew already started with different goal"
+    else:
+        raise AssertionError("expected changed crew goal to be rejected")
+
+    events = store.list_stream("crew-1")
+    assert [event.type for event in events] == ["crew.started"]
+    assert events[0].payload["goal"] == "Fix tests"
+
+
 def test_workflow_engine_records_human_required(tmp_path: Path):
     store = SQLiteEventStore(tmp_path / "events.sqlite3")
     engine = V4WorkflowEngine(event_store=store)
@@ -158,3 +176,57 @@ def test_workflow_engine_records_human_required(tmp_path: Path):
     assert event.type == "human.required"
     assert event.payload["reason"] == "review verdict unknown"
     assert event.artifact_refs == ["review.json"]
+
+
+def test_workflow_engine_human_required_dedupes_same_evidence_and_appends_changed_evidence(
+    tmp_path: Path,
+):
+    store = SQLiteEventStore(tmp_path / "events.sqlite3")
+    engine = V4WorkflowEngine(event_store=store)
+
+    first = engine.require_human(
+        crew_id="crew-1",
+        reason="review verdict unknown",
+        evidence_refs=["review.json"],
+    )
+    duplicate = engine.require_human(
+        crew_id="crew-1",
+        reason="review verdict unknown",
+        evidence_refs=["review.json"],
+    )
+    changed = engine.require_human(
+        crew_id="crew-1",
+        reason="review verdict unknown",
+        evidence_refs=["review-v2.json"],
+    )
+
+    assert duplicate.event_id == first.event_id
+    assert changed.event_id != first.event_id
+    assert [event.sequence for event in store.list_stream("crew-1")] == [1, 2]
+
+
+def test_workflow_engine_mark_ready_dedupes_same_evidence_and_appends_changed_evidence(
+    tmp_path: Path,
+):
+    store = SQLiteEventStore(tmp_path / "events.sqlite3")
+    engine = V4WorkflowEngine(event_store=store)
+
+    first = engine.mark_ready(
+        crew_id="crew-1",
+        round_id="round-1",
+        evidence_refs=["readiness.json"],
+    )
+    duplicate = engine.mark_ready(
+        crew_id="crew-1",
+        round_id="round-1",
+        evidence_refs=["readiness.json"],
+    )
+    changed = engine.mark_ready(
+        crew_id="crew-1",
+        round_id="round-1",
+        evidence_refs=["readiness-v2.json"],
+    )
+
+    assert duplicate.event_id == first.event_id
+    assert changed.event_id != first.event_id
+    assert [event.sequence for event in store.list_stream("crew-1")] == [1, 2]
