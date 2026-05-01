@@ -15,6 +15,10 @@ def _non_empty_str(value) -> str:
     return value if isinstance(value, str) and value else ""
 
 
+def _terminal_pane_for(turn: TurnEnvelope, worker: WorkerSpec | None) -> str:
+    return (_non_empty_str(worker.terminal_pane) if worker else "") or turn.worker_id
+
+
 class ClaudeCodeTmuxAdapter:
     def __init__(self, *, native_session):
         self._native_session = native_session
@@ -33,7 +37,7 @@ class ClaudeCodeTmuxAdapter:
 
     def deliver_turn(self, turn: TurnEnvelope) -> DeliveryResult:
         worker = self._workers.get(turn.worker_id)
-        terminal_pane = worker.terminal_pane if worker else turn.worker_id
+        terminal_pane = _terminal_pane_for(turn, worker)
         result = self._native_session.send(
             terminal_pane=terminal_pane,
             message=turn.message,
@@ -55,7 +59,7 @@ class ClaudeCodeTmuxAdapter:
 
     def watch_turn(self, turn: TurnEnvelope):
         worker = self._workers.get(turn.worker_id)
-        terminal_pane = worker.terminal_pane if worker else turn.worker_id
+        terminal_pane = _terminal_pane_for(turn, worker)
         observation = self._native_session.observe(
             terminal_pane=terminal_pane,
             lines=200,

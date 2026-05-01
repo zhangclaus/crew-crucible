@@ -65,6 +65,34 @@ def test_tmux_adapter_unregistered_worker_uses_worker_id_as_terminal_pane():
     assert native.observations[0]["terminal_pane"] == "worker-1"
 
 
+def test_tmux_adapter_registered_worker_empty_pane_uses_worker_id_as_terminal_pane():
+    native = FakeNativeSession()
+    adapter = ClaudeCodeTmuxAdapter(native_session=native)
+    adapter.register_worker(
+        WorkerSpec(
+            crew_id="crew-1",
+            worker_id="worker-1",
+            runtime_type="tmux_claude",
+            contract_id="contract-1",
+        )
+    )
+    turn = TurnEnvelope(
+        crew_id="crew-1",
+        worker_id="worker-1",
+        turn_id="turn-1",
+        round_id="round-1",
+        phase="source",
+        message="Implement",
+        expected_marker="marker-1",
+    )
+
+    adapter.deliver_turn(turn)
+    list(adapter.watch_turn(turn))
+
+    assert native.sent[0]["terminal_pane"] == "worker-1"
+    assert native.observations[0]["terminal_pane"] == "worker-1"
+
+
 def test_tmux_adapter_native_send_failure_maps_to_delivery_result():
     native = FakeNativeSession()
     native.send_result = {"delivered": False, "reason": "pane missing"}
