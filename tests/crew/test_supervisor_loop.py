@@ -200,6 +200,89 @@ def test_supervisor_loop_dynamic_run_spawns_source_contract_without_static_roste
     assert controller.snapshots[-1]["last_decision"]["action_type"] == "accept_ready"
 
 
+def test_supervisor_loop_dynamic_ignores_legacy_implementer_without_source_write_authority(tmp_path: Path):
+    controller = FakeController([{"passed": True, "summary": "command passed: exit code 0"}])
+    controller.status_payload = {
+        "crew": {"crew_id": "crew-1", "root_goal": "Fix source"},
+        "workers": [{"worker_id": "worker-legacy", "role": "implementer"}],
+    }
+    controller.changes = lambda **kwargs: {"worker_id": kwargs["worker_id"], "changed_files": []}
+    loop = CrewSupervisorLoop(controller=controller, poll_interval_seconds=0, max_observe_attempts=1)
+
+    result = loop.run(
+        repo_root=tmp_path,
+        goal="Fix source",
+        verification_commands=["pytest -q"],
+        max_rounds=1,
+        spawn_policy="dynamic",
+    )
+
+    assert result["status"] == "ready_for_codex_accept"
+    assert controller.ensured[0]["contract"].label == "targeted-code-editor"
+    assert all(call["worker_id"] != "worker-legacy" for call in controller.sent)
+    assert all(call["worker_id"] != "worker-legacy" for call in controller.verify_called)
+
+
+def test_supervisor_loop_dynamic_reselects_source_worker_when_cached_worker_stops(tmp_path: Path):
+    controller = FakeController(
+        [
+            {"passed": False, "summary": "pytest failed"},
+            {"passed": True, "summary": "command passed: exit code 0"},
+        ]
+    )
+    controller.status_payload = {"crew": {"crew_id": "crew-1", "root_goal": "Fix source"}, "workers": []}
+    worker_ids = iter(["worker-source-1", "worker-source-2"])
+
+    def ensure_numbered_worker(**kwargs):
+        controller.ensured.append(kwargs)
+        worker = {
+            "worker_id": next(worker_ids),
+            "role": "implementer",
+            "label": kwargs["contract"].label,
+            "contract_id": kwargs["contract"].contract_id,
+            "capabilities": kwargs["contract"].required_capabilities,
+            "authority_level": kwargs["contract"].authority_level.value,
+            "write_scope": kwargs["contract"].write_scope,
+        }
+        controller.status_payload["workers"] = [
+            item
+            for item in controller.status_payload.get("workers", [])
+            if item["worker_id"] != worker["worker_id"]
+        ]
+        controller.status_payload["workers"].append(worker)
+        return worker
+
+    def verify_and_stop_first_worker(**kwargs):
+        controller.verify_called.append(kwargs)
+        result = controller.verification_results.pop(0)
+        if kwargs["worker_id"] == "worker-source-1":
+            controller.status_payload["workers"] = [
+                {**item, "status": "stopped"} if item["worker_id"] == "worker-source-1" else item
+                for item in controller.status_payload["workers"]
+            ]
+        return result
+
+    controller.ensure_worker = ensure_numbered_worker
+    controller.verify = verify_and_stop_first_worker
+    controller.changes = lambda **kwargs: {"worker_id": kwargs["worker_id"], "changed_files": []}
+    loop = CrewSupervisorLoop(controller=controller, poll_interval_seconds=0, max_observe_attempts=1)
+
+    result = loop.run(
+        repo_root=tmp_path,
+        goal="Fix source",
+        verification_commands=["pytest -q"],
+        max_rounds=2,
+        spawn_policy="dynamic",
+    )
+
+    assert result["status"] == "ready_for_codex_accept"
+    assert [call["worker_id"] for call in controller.sent if call["message"].startswith("Begin or continue")] == [
+        "worker-source-1",
+        "worker-source-2",
+    ]
+    assert [call["worker_id"] for call in controller.verify_called] == ["worker-source-1", "worker-source-2"]
+
+
 def test_supervisor_loop_dynamic_infers_tools_write_scope_from_repo_layout(tmp_path: Path):
     (tmp_path / "tools" / "tests").mkdir(parents=True)
     controller = FakeController([{"passed": True, "summary": "command passed: exit code 0"}])

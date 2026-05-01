@@ -84,14 +84,11 @@ class CrewSupervisorLoop:
         events: list[dict[str, Any]] = []
         verification_failures: list[dict[str, Any]] = []
         repo_write_scope = self._repo_write_scope(repo_root)
-        source_worker: dict[str, Any] | None = self._source_write_worker(
-            self._controller.status(repo_root=repo_root, crew_id=crew_id)
-        )
         pending_marker: str | None = None
 
         for round_index in range(1, max_rounds + 1):
             details = self._controller.status(repo_root=repo_root, crew_id=crew_id)
-            source_worker = source_worker or self._source_write_worker(details)
+            source_worker = self._source_write_worker(details)
             startup_attempts = 0
             while source_worker is None:
                 context_insufficient = seed_contract in {"context_scout", "readonly_scout"} and not self._has_worker_capability(
@@ -581,7 +578,7 @@ class CrewSupervisorLoop:
         return next((worker for worker in details.get("workers", []) if worker.get("role") == role.value), None)
 
     def _source_write_worker(self, details: dict[str, Any]) -> dict[str, Any] | None:
-        worker = next(
+        return next(
             (
                 item
                 for item in details.get("workers", [])
@@ -590,9 +587,6 @@ class CrewSupervisorLoop:
             ),
             None,
         )
-        if worker is not None:
-            return worker
-        return self._worker_by_role(details, WorkerRole.IMPLEMENTER)
 
     def _has_worker_capability(self, details: dict[str, Any], capability: str) -> bool:
         return any(
