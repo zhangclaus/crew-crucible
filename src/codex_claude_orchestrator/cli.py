@@ -32,6 +32,7 @@ from codex_claude_orchestrator.crew.task_graph import TaskGraphPlanner
 from codex_claude_orchestrator.runtime.tmux_console import TmuxCommandRunner, TmuxConsole, build_default_term_name
 from codex_claude_orchestrator.ui.server import run_ui_server
 from codex_claude_orchestrator.v4.event_store_factory import build_v4_event_store
+from codex_claude_orchestrator.v4.merge_transaction import V4MergeTransaction
 from codex_claude_orchestrator.verification.runner import VerificationRunner
 from codex_claude_orchestrator.workers.change_recorder import WorkerChangeRecorder
 from codex_claude_orchestrator.workers.pool import WorkerPool
@@ -159,6 +160,7 @@ def build_parser() -> argparse.ArgumentParser:
     crew_accept.add_argument("--repo", required=True)
     crew_accept.add_argument("--crew", required=False)
     crew_accept.add_argument("--summary", required=True)
+    crew_accept.add_argument("--verification-command", action="append", default=[])
     crew_stop = crew_subparsers.add_parser("stop", help="Stop all native Claude sessions for a crew")
     crew_stop.add_argument("--repo", required=True)
     crew_stop.add_argument("--crew", required=False)
@@ -452,6 +454,19 @@ def build_crew_controller(repo_root: Path) -> CrewController:
 
 def build_crew_supervisor_loop(controller: CrewController) -> CrewSupervisorLoop:
     return CrewSupervisorLoop(controller=controller)
+
+
+def build_v4_merge_transaction(
+    repo_root: Path,
+    recorder: CrewRecorder,
+    controller: CrewController,
+) -> V4MergeTransaction:
+    return V4MergeTransaction(
+        repo_root=repo_root,
+        recorder=recorder,
+        event_store=build_v4_event_store(repo_root, readonly=False),
+        stop_workers=controller.stop_workers_for_accept,
+    )
 
 
 def build_worker_selection_policy() -> WorkerSelectionPolicy:
@@ -869,7 +884,17 @@ def handle_crew_command(args) -> int:
         print(json.dumps(controller.challenge(crew_id=crew_id, task_id=args.task, summary=args.summary), ensure_ascii=False))
         return 0
     if args.crew_command == "accept":
-        print(json.dumps(controller.accept(crew_id=crew_id, summary=args.summary), ensure_ascii=False))
+        transaction = build_v4_merge_transaction(repo_root, recorder, controller)
+        print(
+            json.dumps(
+                transaction.accept(
+                    crew_id=crew_id,
+                    summary=args.summary,
+                    verification_commands=args.verification_command,
+                ),
+                ensure_ascii=False,
+            )
+        )
         return 0
     if args.crew_command == "stop":
         print(json.dumps(controller.stop(repo_root=repo_root, crew_id=crew_id), ensure_ascii=False))

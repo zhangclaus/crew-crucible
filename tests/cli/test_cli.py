@@ -1016,6 +1016,16 @@ class FakeCrewSupervisorLoop:
         return {"crew_id": "crew-cli", "status": "ready_for_codex_accept"}
 
 
+class FakeV4MergeTransaction:
+    def __init__(self, response=None):
+        self.response = response or {"crew_id": "crew-cli", "status": "accepted"}
+        self.calls = []
+
+    def accept(self, **kwargs):
+        self.calls.append(kwargs)
+        return self.response
+
+
 def test_build_parser_exposes_crew_start_and_worker_commands():
     from codex_claude_orchestrator.cli import build_parser
 
@@ -1193,6 +1203,92 @@ def test_main_crew_worker_stop_accepts_workspace_cleanup_policy(tmp_path: Path, 
     assert exit_code == 0
     assert payload["stopped"] is True
     assert fake_controller.calls[0]["workspace_cleanup"] == "remove"
+
+
+def test_main_crew_accept_routes_to_v4_merge_transaction(tmp_path: Path, monkeypatch):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    fake_controller = FakeCrewController()
+    fake_transaction = FakeV4MergeTransaction(
+        {"crew_id": "crew-cli", "status": "accepted", "summary": "accepted"}
+    )
+    monkeypatch.setattr("codex_claude_orchestrator.cli.build_crew_controller", lambda repo_root: fake_controller)
+    monkeypatch.setattr(
+        "codex_claude_orchestrator.cli.build_v4_merge_transaction",
+        lambda repo_root, recorder, controller: fake_transaction,
+    )
+
+    stdout = StringIO()
+    with redirect_stdout(stdout):
+        exit_code = main(
+            [
+                "crew",
+                "accept",
+                "--repo",
+                str(repo_root),
+                "--crew",
+                "crew-cli",
+                "--summary",
+                "accepted",
+                "--verification-command",
+                "pytest -q",
+            ]
+        )
+
+    payload = json.loads(stdout.getvalue())
+    assert exit_code == 0
+    assert payload["status"] == "accepted"
+    assert fake_transaction.calls == [
+        {
+            "crew_id": "crew-cli",
+            "summary": "accepted",
+            "verification_commands": ["pytest -q"],
+        }
+    ]
+    assert fake_controller.calls == []
+
+
+def test_main_crew_accept_without_verification_command_is_blocked(
+    tmp_path: Path,
+    monkeypatch,
+):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    fake_controller = FakeCrewController()
+    fake_transaction = FakeV4MergeTransaction(
+        {
+            "crew_id": "crew-cli",
+            "status": "blocked",
+            "reason": "verification command required",
+        }
+    )
+    monkeypatch.setattr("codex_claude_orchestrator.cli.build_crew_controller", lambda repo_root: fake_controller)
+    monkeypatch.setattr(
+        "codex_claude_orchestrator.cli.build_v4_merge_transaction",
+        lambda repo_root, recorder, controller: fake_transaction,
+    )
+
+    stdout = StringIO()
+    with redirect_stdout(stdout):
+        exit_code = main(
+            [
+                "crew",
+                "accept",
+                "--repo",
+                str(repo_root),
+                "--crew",
+                "crew-cli",
+                "--summary",
+                "accepted",
+            ]
+        )
+
+    payload = json.loads(stdout.getvalue())
+    assert exit_code == 0
+    assert payload["status"] == "blocked"
+    assert payload["reason"] == "verification command required"
+    assert fake_transaction.calls[0]["verification_commands"] == []
+    assert fake_controller.calls == []
 
 
 def test_main_crew_resume_context_prints_replay_payload(tmp_path: Path, monkeypatch):

@@ -404,6 +404,11 @@ class CrewController:
         self._recorder.finalize_crew(crew_id, CrewStatus.CANCELLED, "crew stopped by Codex")
         return {"crew_id": crew_id, "status": CrewStatus.CANCELLED.value, "stop": stop_result}
 
+    def stop_workers_for_accept(self, *, repo_root: Path, crew_id: str) -> dict:
+        stop_result = self._worker_pool.stop_crew(repo_root=repo_root, crew_id=crew_id)
+        self._recorder.update_crew(crew_id, {"active_worker_ids": []})
+        return stop_result
+
     def prune_orphans(self, *, repo_root: Path) -> dict:
         return self._worker_pool.prune_orphans(repo_root=repo_root)
 
