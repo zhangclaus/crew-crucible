@@ -44,6 +44,8 @@ class AdversarialEvaluator:
                 return True
             if event.type != "worker.outbox.detected":
                 continue
+            if event.payload.get("valid") is not True:
+                continue
             verification = event.payload.get("verification", [])
             if not isinstance(verification, list):
                 continue
