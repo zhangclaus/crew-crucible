@@ -49,6 +49,8 @@ class TurnService:
             crew_id=turn.crew_id,
             worker_id=turn.worker_id,
             turn_id=turn.turn_id,
+            round_id=turn.round_id,
+            contract_id=turn.contract_id,
             idempotency_key=f"{turn.idempotency_key}/attempt-{turn.attempt}/requested",
             payload={
                 "round_id": turn.round_id,
@@ -66,6 +68,8 @@ class TurnService:
             crew_id=turn.crew_id,
             worker_id=turn.worker_id,
             turn_id=turn.turn_id,
+            round_id=turn.round_id,
+            contract_id=turn.contract_id,
             idempotency_key=f"{turn.idempotency_key}/attempt-{turn.attempt}/delivery-started",
         )
         if not inserted:
@@ -92,6 +96,8 @@ class TurnService:
                 crew_id=turn.crew_id,
                 worker_id=turn.worker_id,
                 turn_id=turn.turn_id,
+                round_id=turn.round_id,
+                contract_id=turn.contract_id,
                 idempotency_key=f"{turn.idempotency_key}/delivered",
                 payload={"marker": result.marker, "reason": result.reason},
                 artifact_refs=result.artifact_refs,
@@ -103,6 +109,8 @@ class TurnService:
                 crew_id=turn.crew_id,
                 worker_id=turn.worker_id,
                 turn_id=turn.turn_id,
+                round_id=turn.round_id,
+                contract_id=turn.contract_id,
                 idempotency_key=f"{turn.idempotency_key}/delivery-failed/{turn.attempt}",
                 payload={"marker": result.marker, "reason": result.reason},
                 artifact_refs=result.artifact_refs,

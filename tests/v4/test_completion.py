@@ -15,6 +15,7 @@ def make_turn() -> TurnEnvelope:
         phase="implement",
         message="Finish the task",
         expected_marker="TURN_DONE",
+        requires_structured_result=False,
     )
 
 
@@ -206,3 +207,73 @@ def test_missing_completion_evidence_is_inconclusive() -> None:
 
     assert decision.event_type == "turn.inconclusive"
     assert decision.reason == "completion evidence not found"
+
+
+def test_valid_outbox_evidence_completes_structured_turn() -> None:
+    decision = CompletionDetector.evaluate(
+        replace(make_turn(), requires_structured_result=True),
+        [
+            RuntimeEvent(
+                type="worker.outbox.detected",
+                turn_id="turn-1",
+                worker_id="worker-1",
+                payload={"valid": True},
+                artifact_refs=["workers/worker-1/outbox/turn-1.json"],
+            )
+        ],
+    )
+
+    assert decision.event_type == "turn.completed"
+    assert decision.reason == "valid outbox result detected"
+    assert decision.evidence_refs == ["workers/worker-1/outbox/turn-1.json"]
+
+
+def test_source_write_marker_without_outbox_is_inconclusive() -> None:
+    turn = TurnEnvelope(
+        crew_id="crew-1",
+        worker_id="worker-1",
+        turn_id="turn-1",
+        round_id="round-1",
+        phase="source",
+        message="work",
+        expected_marker="DONE",
+        contract_id="contract-1",
+        requires_structured_result=True,
+    )
+    decision = CompletionDetector.evaluate(
+        turn,
+        [
+            RuntimeEvent(
+                type="marker.detected",
+                turn_id="turn-1",
+                worker_id="worker-1",
+                payload={"marker": "DONE"},
+            )
+        ],
+    )
+
+    assert decision.event_type == "turn.inconclusive"
+    assert decision.reason == "missing_outbox"
+
+
+def test_marker_allowed_turn_can_complete_without_outbox() -> None:
+    turn = replace(
+        make_turn(),
+        requires_structured_result=True,
+        completion_mode="marker_allowed",
+    )
+
+    decision = CompletionDetector.evaluate(
+        turn,
+        [
+            RuntimeEvent(
+                type="marker.detected",
+                turn_id="turn-1",
+                worker_id="worker-1",
+                payload={"marker": "TURN_DONE"},
+            )
+        ],
+    )
+
+    assert decision.event_type == "turn.completed"
+    assert decision.reason == "expected marker detected"

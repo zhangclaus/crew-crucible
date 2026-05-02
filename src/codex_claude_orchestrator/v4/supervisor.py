@@ -49,6 +49,7 @@ class V4Supervisor:
             phase="source",
             message=message,
             expected_marker=expected_marker,
+            contract_id="source_write",
         )
 
         terminal_result = self._terminal_result(crew_id=crew_id, turn=turn)
@@ -85,6 +86,8 @@ class V4Supervisor:
                 crew_id=crew_id,
                 worker_id=runtime_event.worker_id,
                 turn_id=runtime_event.turn_id,
+                round_id=turn.round_id,
+                contract_id=turn.contract_id,
                 idempotency_key=(
                     f"{crew_id}/{turn.turn_id}/{runtime_event.type}/{index}/"
                     f"{_runtime_event_digest(runtime_event, index=index)}"
@@ -104,6 +107,8 @@ class V4Supervisor:
             crew_id=crew_id,
             worker_id=worker_id,
             turn_id=turn.turn_id,
+            round_id=turn.round_id,
+            contract_id=turn.contract_id,
             idempotency_key=f"{crew_id}/{turn.turn_id}/{decision.event_type}",
             payload={"reason": decision.reason},
             artifact_refs=decision.evidence_refs,

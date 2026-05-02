@@ -25,7 +25,7 @@ class CompletionDetector:
         output_text = "".join(
             str(event.payload.get("text", ""))
             for event in events
-            if event.type == "output.chunk"
+            if event.type in {"output.chunk", "runtime.output.appended"}
         )
         evidence_refs = list(
             dict.fromkeys(
@@ -41,7 +41,25 @@ class CompletionDetector:
             for event in events
         )
 
+        outbox_detected = any(
+            event.type == "worker.outbox.detected"
+            and event.payload.get("valid") is True
+            for event in events
+        )
+        if outbox_detected:
+            return CompletionDecision(
+                event_type="turn.completed",
+                reason="valid outbox result detected",
+                evidence_refs=evidence_refs,
+            )
+
         if turn.expected_marker and (turn.expected_marker in output_text or marker_detected):
+            if turn.requires_structured_result and turn.completion_mode != "marker_allowed":
+                return CompletionDecision(
+                    event_type="turn.inconclusive",
+                    reason="missing_outbox",
+                    evidence_refs=evidence_refs,
+                )
             return CompletionDecision(
                 event_type="turn.completed",
                 reason="expected marker detected",
@@ -56,7 +74,7 @@ class CompletionDetector:
             )
 
         for event in events:
-            if event.type == "process.exited":
+            if event.type in {"process.exited", "runtime.process_exited"}:
                 return CompletionDecision(
                     event_type="turn.failed",
                     reason=event.payload.get("reason")
@@ -64,7 +82,8 @@ class CompletionDetector:
                     evidence_refs=evidence_refs,
                 )
 
-        if timed_out:
+        deadline_reached = any(event.type == "turn.deadline_reached" for event in events)
+        if timed_out or deadline_reached:
             return CompletionDecision(
                 event_type="turn.timeout",
                 reason="deadline reached before completion evidence",

@@ -21,6 +21,23 @@ def test_turn_envelope_idempotency_key_includes_phase() -> None:
     assert turn.idempotency_key == "crew-1/worker-1/turn-1/implement"
 
 
+def test_turn_envelope_defaults_to_structured_completion() -> None:
+    turn = TurnEnvelope(
+        crew_id="crew-1",
+        worker_id="worker-1",
+        turn_id="turn-1",
+        round_id="round-1",
+        phase="implement",
+        message="Add runtime models",
+        expected_marker="DONE",
+        contract_id="contract-1",
+    )
+
+    assert turn.contract_id == "contract-1"
+    assert turn.completion_mode == "structured_required"
+    assert turn.requires_structured_result is True
+
+
 def test_runtime_event_to_dict_normalizes_payload() -> None:
     event = RuntimeEvent(
         type="turn.completed",

@@ -25,6 +25,16 @@ class FakeAdapter:
         return iter(events)
 
 
+def completed_outbox_event(turn: TurnEnvelope) -> RuntimeEvent:
+    return RuntimeEvent(
+        type="worker.outbox.detected",
+        turn_id=turn.turn_id,
+        worker_id=turn.worker_id,
+        payload={"valid": True, "status": "completed"},
+        artifact_refs=[f"workers/{turn.worker_id}/outbox/{turn.turn_id}.json"],
+    )
+
+
 def test_v4_supervisor_runs_until_turn_completed(tmp_path: Path):
     store = SQLiteEventStore(tmp_path / "events.sqlite3")
     supervisor = V4Supervisor(
@@ -32,12 +42,7 @@ def test_v4_supervisor_runs_until_turn_completed(tmp_path: Path):
         artifact_store=ArtifactStore(tmp_path / "artifacts"),
         adapter=FakeAdapter(
             lambda turn: [
-                RuntimeEvent(
-                    type="output.chunk",
-                    turn_id=turn.turn_id,
-                    worker_id=turn.worker_id,
-                    payload={"text": "done marker-1"},
-                ),
+                completed_outbox_event(turn),
             ]
         ),
     )
@@ -57,9 +62,39 @@ def test_v4_supervisor_runs_until_turn_completed(tmp_path: Path):
         "turn.requested",
         "turn.delivery_started",
         "turn.delivered",
-        "output.chunk",
+        "worker.outbox.detected",
         "turn.completed",
     ]
+
+
+def test_v4_supervisor_keeps_marker_only_source_turn_waiting(tmp_path: Path):
+    store = SQLiteEventStore(tmp_path / "events.sqlite3")
+    supervisor = V4Supervisor(
+        event_store=store,
+        artifact_store=ArtifactStore(tmp_path / "artifacts"),
+        adapter=FakeAdapter(
+            lambda turn: [
+                RuntimeEvent(
+                    type="marker.detected",
+                    turn_id=turn.turn_id,
+                    worker_id=turn.worker_id,
+                    payload={"marker": "marker-1"},
+                ),
+            ]
+        ),
+    )
+
+    result = supervisor.run_source_turn(
+        crew_id="crew-1",
+        goal="Fix tests",
+        worker_id="worker-1",
+        round_id="round-1",
+        message="Implement",
+        expected_marker="marker-1",
+    )
+
+    assert result["status"] == "waiting"
+    assert result["reason"] == "missing_outbox"
 
 
 def test_v4_supervisor_returns_waiting_for_inconclusive_turn(tmp_path: Path):
@@ -234,21 +269,15 @@ def test_v4_supervisor_dedupes_identical_runtime_observation_on_repeat(tmp_path:
 def test_v4_supervisor_preserves_completed_turn_on_repeat(tmp_path: Path):
     store = SQLiteEventStore(tmp_path / "events.sqlite3")
     watches = [
-        [{"text": "done marker-1"}],
+        ["outbox"],
         [],
     ]
 
     def events_for_turn(turn: TurnEnvelope):
         payloads = watches.pop(0)
-        return [
-            RuntimeEvent(
-                type="output.chunk",
-                turn_id=turn.turn_id,
-                worker_id=turn.worker_id,
-                payload=payload,
-            )
-            for payload in payloads
-        ]
+        if payloads == ["outbox"]:
+            return [completed_outbox_event(turn)]
+        return []
 
     adapter = FakeAdapter(events_for_turn)
     supervisor = V4Supervisor(
@@ -285,12 +314,7 @@ def test_v4_supervisor_resume_does_not_redeliver_completed_turn(tmp_path: Path):
     store = SQLiteEventStore(tmp_path / "events.sqlite3")
     adapter = FakeAdapter(
         lambda turn: [
-            RuntimeEvent(
-                type="output.chunk",
-                turn_id=turn.turn_id,
-                worker_id=turn.worker_id,
-                payload={"text": "done marker-1"},
-            )
+            completed_outbox_event(turn)
         ]
     )
     first_supervisor = V4Supervisor(
@@ -343,12 +367,7 @@ def test_v4_supervisor_ignores_terminal_events_from_other_crews(tmp_path: Path):
 
     adapter = FakeAdapter(
         lambda turn: [
-            RuntimeEvent(
-                type="output.chunk",
-                turn_id=turn.turn_id,
-                worker_id=turn.worker_id,
-                payload={"text": "done marker-1"},
-            )
+            completed_outbox_event(turn)
         ]
     )
     supervisor = V4Supervisor(
@@ -374,7 +393,7 @@ def test_v4_supervisor_ignores_terminal_events_from_other_crews(tmp_path: Path):
         "turn.requested",
         "turn.delivery_started",
         "turn.delivered",
-        "output.chunk",
+        "worker.outbox.detected",
         "turn.completed",
     ]
 
