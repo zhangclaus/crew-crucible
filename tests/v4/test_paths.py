@@ -55,7 +55,7 @@ def test_v4_paths_resolve_crew_artifacts(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     "unsafe_id",
-    ["", "/absolute", "../crew", "crew/one", "crew:one"],
+    ["", ".", " ", "\t", "/absolute", "../crew", "crew/one", "crew:one"],
 )
 def test_v4_paths_reject_unsafe_crew_ids(tmp_path: Path, unsafe_id: str) -> None:
     with pytest.raises(ValueError, match="unsafe"):
@@ -64,7 +64,7 @@ def test_v4_paths_reject_unsafe_crew_ids(tmp_path: Path, unsafe_id: str) -> None
 
 @pytest.mark.parametrize(
     "unsafe_id",
-    ["", "/absolute", "../turn", "turn/one", "turn:one"],
+    ["", ".", " ", "\t", "/absolute", "../turn", "turn/one", "turn:one"],
 )
 def test_v4_paths_reject_unsafe_method_ids(tmp_path: Path, unsafe_id: str) -> None:
     paths = V4Paths(repo_root=tmp_path, crew_id="crew-1")

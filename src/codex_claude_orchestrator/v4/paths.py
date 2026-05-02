@@ -66,7 +66,7 @@ class V4Paths:
 
 
 def _safe_id(value: str, field_name: str) -> str:
-    if not isinstance(value, str) or not value:
+    if not isinstance(value, str) or not value or value.strip() != value or value == ".":
         raise ValueError(f"{field_name} is unsafe")
 
     if (

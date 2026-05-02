@@ -97,13 +97,43 @@ class PostgresEventStore:
         artifact_refs: list[str] | None = None,
         created_at: str = "",
     ) -> AgentEvent:
+        event, _inserted = self._append_event(
+            stream_id=stream_id,
+            type=type,
+            crew_id=crew_id,
+            worker_id=worker_id,
+            turn_id=turn_id,
+            round_id=round_id,
+            contract_id=contract_id,
+            idempotency_key=idempotency_key,
+            payload=payload,
+            artifact_refs=artifact_refs,
+            created_at=created_at,
+        )
+        return event
+
+    def _append_event(
+        self,
+        *,
+        stream_id: str,
+        type: str,
+        crew_id: str = "",
+        worker_id: str = "",
+        turn_id: str = "",
+        round_id: str = "",
+        contract_id: str = "",
+        idempotency_key: str = "",
+        payload: dict[str, Any] | None = None,
+        artifact_refs: list[str] | None = None,
+        created_at: str = "",
+    ) -> tuple[AgentEvent, bool]:
         with self._connect() as conn:
             with conn.cursor() as cursor:
                 if idempotency_key:
                     existing = self._get_by_idempotency_key(cursor, idempotency_key)
                     if existing is not None:
                         conn.commit()
-                        return existing
+                        return existing, False
 
                 cursor.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (stream_id,))
                 sequence = self._next_sequence(cursor, stream_id)
@@ -122,9 +152,14 @@ class PostgresEventStore:
                     artifact_refs=artifact_refs or [],
                     created_at=created_at or _utc_now(),
                 )
-                self._insert_event(cursor, event)
+                inserted = self._insert_event(cursor, event)
+                if not inserted and idempotency_key:
+                    existing = self._get_by_idempotency_key(cursor, idempotency_key)
+                    if existing is not None:
+                        conn.commit()
+                        return existing, False
             conn.commit()
-            return event
+            return event, True
 
     def append_claim(
         self,
@@ -141,24 +176,18 @@ class PostgresEventStore:
         artifact_refs: list[str] | None = None,
         created_at: str = "",
     ) -> tuple[AgentEvent, bool]:
-        existing = self.get_by_idempotency_key(idempotency_key)
-        if existing is not None:
-            return existing, False
-        return (
-            self.append(
-                stream_id=stream_id,
-                type=type,
-                crew_id=crew_id,
-                worker_id=worker_id,
-                turn_id=turn_id,
-                round_id=round_id,
-                contract_id=contract_id,
-                idempotency_key=idempotency_key,
-                payload=payload,
-                artifact_refs=artifact_refs,
-                created_at=created_at,
-            ),
-            True,
+        return self._append_event(
+            stream_id=stream_id,
+            type=type,
+            crew_id=crew_id,
+            worker_id=worker_id,
+            turn_id=turn_id,
+            round_id=round_id,
+            contract_id=contract_id,
+            idempotency_key=idempotency_key,
+            payload=payload,
+            artifact_refs=artifact_refs,
+            created_at=created_at,
         )
 
     def list_stream(self, stream_id: str, after_sequence: int = 0) -> list[AgentEvent]:
@@ -183,7 +212,7 @@ class PostgresEventStore:
                     """
                     SELECT * FROM agent_events
                     WHERE turn_id = %s
-                    ORDER BY created_at ASC, sequence ASC
+                    ORDER BY position ASC
                     """,
                     (turn_id,),
                 )
@@ -194,7 +223,7 @@ class PostgresEventStore:
     def list_all(self) -> list[AgentEvent]:
         with self._connect() as conn:
             with conn.cursor() as cursor:
-                cursor.execute("SELECT * FROM agent_events ORDER BY created_at ASC, sequence ASC")
+                cursor.execute("SELECT * FROM agent_events ORDER BY position ASC")
                 rows = cursor.fetchall()
             conn.commit()
         return [self._row_to_event(row) for row in rows]
@@ -234,7 +263,7 @@ class PostgresEventStore:
         return int(cursor.fetchone()["next_sequence"])
 
     @staticmethod
-    def _insert_event(cursor, event: AgentEvent) -> None:
+    def _insert_event(cursor, event: AgentEvent) -> bool:
         cursor.execute(
             """
             INSERT INTO agent_events (
@@ -254,6 +283,9 @@ class PostgresEventStore:
             ) VALUES (
                 %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s
             )
+            ON CONFLICT (idempotency_key) WHERE idempotency_key != ''
+            DO NOTHING
+            RETURNING event_id
             """,
             (
                 event.event_id,
@@ -271,6 +303,7 @@ class PostgresEventStore:
                 event.created_at,
             ),
         )
+        return cursor.fetchone() is not None
 
     @staticmethod
     def _row_to_event(row: Mapping[str, Any]) -> AgentEvent:
@@ -311,6 +344,7 @@ SCHEMA_STATEMENTS = [
     """,
     """
     CREATE TABLE IF NOT EXISTS agent_events (
+        position BIGSERIAL NOT NULL,
         event_id TEXT PRIMARY KEY,
         stream_id TEXT NOT NULL,
         sequence INTEGER NOT NULL,
@@ -318,8 +352,6 @@ SCHEMA_STATEMENTS = [
         crew_id TEXT NOT NULL DEFAULT '',
         worker_id TEXT NOT NULL DEFAULT '',
         turn_id TEXT NOT NULL DEFAULT '',
-        round_id TEXT NOT NULL DEFAULT '',
-        contract_id TEXT NOT NULL DEFAULT '',
         idempotency_key TEXT NOT NULL DEFAULT '',
         payload_jsonb JSONB NOT NULL,
         artifact_refs_jsonb JSONB NOT NULL,
@@ -327,6 +359,9 @@ SCHEMA_STATEMENTS = [
         UNIQUE (stream_id, sequence)
     )
     """,
+    "ALTER TABLE agent_events ADD COLUMN IF NOT EXISTS position BIGSERIAL",
+    "ALTER TABLE agent_events ADD COLUMN IF NOT EXISTS round_id TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE agent_events ADD COLUMN IF NOT EXISTS contract_id TEXT NOT NULL DEFAULT ''",
     """
     CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_events_idempotency_key_non_empty
     ON agent_events (idempotency_key)
@@ -338,6 +373,7 @@ SCHEMA_STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS idx_agent_events_round_id ON agent_events (round_id)",
     "CREATE INDEX IF NOT EXISTS idx_agent_events_contract_id ON agent_events (contract_id)",
     "CREATE INDEX IF NOT EXISTS idx_agent_events_created_at ON agent_events (created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_agent_events_position ON agent_events (position)",
     """
     INSERT INTO event_store_schema_migrations (version, checksum, applied_at)
     VALUES (1, 'agent_events_v1', CURRENT_TIMESTAMP)

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import inspect
+
 import pytest
 
 from codex_claude_orchestrator.v4.postgres_event_store import (
     PostgresConfigurationError,
     PostgresEventStore,
     PostgresEventStoreConfig,
+    SCHEMA_STATEMENTS,
 )
 
 
@@ -54,3 +57,25 @@ def test_postgres_config_rejects_invalid_port(monkeypatch: pytest.MonkeyPatch) -
 
     with pytest.raises(PostgresConfigurationError, match="PG_PORT"):
         PostgresEventStoreConfig.from_env()
+
+
+def test_postgres_schema_has_real_v2_migration_and_position() -> None:
+    schema = "\n".join(SCHEMA_STATEMENTS)
+
+    assert "position BIGSERIAL" in schema
+    assert "ALTER TABLE agent_events ADD COLUMN IF NOT EXISTS round_id" in schema
+    assert "ALTER TABLE agent_events ADD COLUMN IF NOT EXISTS contract_id" in schema
+    assert "agent_events_round_contract_v2" in schema
+
+
+def test_postgres_replay_queries_order_by_global_position() -> None:
+    assert "ORDER BY position ASC" in inspect.getsource(PostgresEventStore.list_by_turn)
+    assert "ORDER BY position ASC" in inspect.getsource(PostgresEventStore.list_all)
+
+
+def test_postgres_insert_uses_idempotency_conflict_handling() -> None:
+    source = inspect.getsource(PostgresEventStore._insert_event)
+
+    assert "ON CONFLICT (idempotency_key) WHERE idempotency_key != ''" in source
+    assert "DO NOTHING" in source
+    assert "RETURNING event_id" in source
