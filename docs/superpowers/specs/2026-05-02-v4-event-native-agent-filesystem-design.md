@@ -1,18 +1,18 @@
 # V4 Event-Native Agent Filesystem Design
 
 Date: 2026-05-02
-Status: Approved for implementation planning
+Status: Revised after review; pending implementation planning approval
 
 ## Purpose
 
-V4 should become the main orchestration path for a stable, powerful multi-agent file-system runtime. The system should no longer treat tmux terminal output as the source of truth. Terminal output is useful evidence, but durable state must come from structured events, worker result files, message delivery records, merge artifacts, and verification evidence.
+V4 should become the main orchestration path for a stable, powerful multi-agent file-system runtime. The system should no longer treat tmux terminal output as the source of truth. Terminal output is useful evidence, but durable state must come from structured events in remote PostgreSQL, worker result files, message read acknowledgements, merge artifacts, and verification evidence.
 
 The target shape is an event-native agent system:
 
 - Codex is the supervisor and final decision maker.
 - Claude Code workers are disposable subagents with explicit contracts.
-- Each worker turn produces durable event evidence and structured filesystem artifacts.
-- The project can recover after process restart by replaying V4 events and reading the agent filesystem.
+- Each worker turn produces durable event evidence in PostgreSQL and structured filesystem artifacts under the repository's orchestrator state root.
+- The project can recover after process restart by replaying V4 events from PostgreSQL and reading the agent filesystem.
 - Accepting work means applying worker changes through a verified merge transaction, not merely finalizing a crew record.
 
 This design follows the direction of strong open-source agent-team systems:
@@ -44,10 +44,13 @@ The current code already has a V4 event store and workflow foundation, but the a
 5. Message bus is not closed-loop.
    `src/codex_claude_orchestrator/messaging/message_bus.py` can store messages and read an inbox, but worker turns do not automatically include unread inbox digest, protocol requests, or delivery acknowledgements.
 
-6. Merge and accept are too thin.
+6. The V4 event schema is under-specified for the target workflow.
+   Current V4 events do not yet carry first-class `round_id` and `contract_id` fields. The design needs an explicit schema versioning and migration path before these fields become required.
+
+7. Merge and accept are too thin.
    `src/codex_claude_orchestrator/crew/merge_arbiter.py` only detects same-file conflicts. `CrewController.accept()` finalizes and stops workers without applying worker patches into an integration workspace and validating the result.
 
-7. V4 is not yet the main CLI path.
+8. V4 is not yet the main CLI path.
    `src/codex_claude_orchestrator/cli.py` exposes V4 events, but normal crew run/supervision still leans on V3 controller behavior.
 
 ## Goals
@@ -55,9 +58,10 @@ The current code already has a V4 event store and workflow foundation, but the a
 - Make V4 the default orchestration path for `crew run`, `crew supervise`, `crew status`, `crew accept`, and event inspection.
 - Replace marker-only completion with multi-source completion evidence.
 - Introduce an agent filesystem where workers write structured outbox/result artifacts.
-- Close the message bus loop so every worker turn includes unread inbox, open protocol requests, and delivery/read evidence.
+- Close the message bus loop so every worker turn includes unread inbox and open protocol requests, and message cursors advance only after explicit read acknowledgement.
 - Make worker reuse safe by comparing contract compatibility, write scope, workspace mode, authority, and worker state.
 - Add a merge transaction that applies worker changes into an integration worktree, validates write scope, resolves conflicts, and verifies the final workspace before accept.
+- Protect the user's main workspace from clobbering dirty or diverged changes during accept.
 - Upgrade decision-making from simple routing rules to a planner that uses repo intelligence and risk signals.
 - Preserve V3 compatibility while moving user-facing commands to V4.
 
@@ -66,6 +70,7 @@ The current code already has a V4 event store and workflow foundation, but the a
 - Do not build a general-purpose replacement for Claude Code.
 - Do not require workers to run without tmux in the first V4 path. The runtime should support tmux as an adapter, but tmux should not be the source of truth.
 - Do not remove V3 immediately. It remains a compatibility layer until V4 commands cover the required workflows.
+- Do not commit database passwords or production secrets. PostgreSQL connection details come from environment variables or a secret provider.
 - Do not make LLM-based planning the only safety layer. Deterministic gates remain mandatory for scope, merge, and verification.
 
 ## Architecture Overview
@@ -78,7 +83,7 @@ flowchart TD
     Supervisor --> Turns["Turn Service"]
     Supervisor --> Merge["Merge Transaction"]
 
-    Workflow --> Events["SQLite Event Store"]
+    Workflow --> Events["Remote PostgreSQL Event Store"]
     Planner --> RepoIntel["Repo Intelligence"]
     Turns --> Runtime["Runtime Adapter"]
     Runtime --> Claude["Claude Code / tmux"]
@@ -102,17 +107,27 @@ flowchart TD
 The main boundary is:
 
 - Runtime adapters deliver turns and expose raw runtime signals.
-- Watchers translate raw signals and filesystem artifacts into durable V4 events.
+- Watchers translate raw signals and filesystem artifacts into raw evidence events only.
+- Completion and workflow components are the only writers of terminal turn-state events such as `turn.completed`, `turn.failed`, and `turn.timeout`.
 - Workflow and projections decide state from events, not from live terminal state.
 - Merge and accept operate on patches/artifacts and final verification evidence.
 
 ## Agent Filesystem
 
-Each crew owns a durable filesystem area under the existing recorder/artifact root. V4 should standardize these paths.
+Each crew owns a durable local filesystem area under the existing recorder/artifact root. V4 should use one canonical physical root and resolve compatibility aliases through one path resolver.
+
+Canonical physical roots:
+
+- Repository state root: `<repo_root>/.orchestrator`
+- Crew record root: `<repo_root>/.orchestrator/crews/<crew_id>`
+- V4 agent artifact root: `<repo_root>/.orchestrator/crews/<crew_id>/artifacts/v4`
+- Worker worktree root: `<repo_root>/.orchestrator/worktrees/<crew_id>/<worker_id>`
+- V4 event store: remote PostgreSQL, not a local event database file
+
+The V4 agent artifact root is the only place new V4 filesystem artifacts should be written. Existing V3 artifact paths may be read through compatibility resolvers, but new V4 modules must not independently choose `.codex`, `.orchestrator/v4`, or raw crew directories.
 
 ```text
-.codex/crew/<crew_id>/
-  events.sqlite
+<repo_root>/.orchestrator/crews/<crew_id>/artifacts/v4/
   manifest.json
   workers/
     <worker_id>/
@@ -144,7 +159,66 @@ Each crew owns a durable filesystem area under the existing recorder/artifact ro
     readiness.json
 ```
 
-The exact physical root can remain the existing crew artifact directory. The important change is that V4 owns a stable schema and treats these files as durable artifacts referenced by events.
+Compatibility aliases:
+
+- `workers/<worker_id>/...` without the `v4/` prefix refers to legacy V3 artifacts.
+- `.codex/crew/<crew_id>/...` is documentation shorthand only and must not be used as a physical write path.
+- All artifact references stored in events should be relative to the V4 agent artifact root unless explicitly marked as legacy.
+
+## PostgreSQL Event Store
+
+Remote PostgreSQL is the canonical event source for V4. The implementation should introduce an `EventStore` protocol and a `PostgresEventStore` production implementation. Any local or in-memory store may be used only for narrow unit tests through the same protocol.
+
+Connection configuration:
+
+```text
+PG_HOST      default for this deployment: 124.222.58.173
+PG_DB        default for this deployment: ragbase
+PG_USER      default for this deployment: ragbase
+PG_PORT      default for this deployment: 5432
+PG_PASSWORD  required secret, no committed default
+```
+
+`PG_PASSWORD` must come from the environment or a secret provider. It must not be committed to code, docs, test fixtures, or default settings. The implementation may provide non-secret defaults for host, database, user, and port, but a missing password should fail fast with a clear configuration error.
+
+Required tables:
+
+```text
+event_store_schema_migrations
+  version
+  checksum
+  applied_at
+
+agent_events
+  event_id
+  stream_id
+  sequence
+  type
+  crew_id
+  worker_id
+  turn_id
+  round_id
+  contract_id
+  idempotency_key
+  payload_jsonb
+  artifact_refs_jsonb
+  created_at
+```
+
+Constraints and indexes:
+
+- Unique `(stream_id, sequence)`.
+- Unique non-empty `idempotency_key`.
+- Indexes on `crew_id`, `worker_id`, `turn_id`, `round_id`, `contract_id`, and `created_at`.
+- Appends use a transaction and row-level advisory or sequence locking per `stream_id`.
+
+Schema versioning:
+
+- Version `1` creates the base event table.
+- Version `2` adds first-class `round_id` and `contract_id`.
+- Migrations are append-only and recorded in `event_store_schema_migrations`.
+- Event readers must tolerate absent optional fields during replay of older events.
+- Once V4 becomes the main path, new events must always populate `round_id` and `contract_id` when the domain object exists.
 
 ## Event Model
 
@@ -181,6 +255,7 @@ turn.delivery_started
 turn.delivered
 runtime.output.appended
 runtime.process_exited
+turn.deadline_reached
 worker.outbox.detected
 worker.patch.detected
 marker.detected
@@ -204,9 +279,20 @@ human.required
 
 Event replay must be sufficient to rebuild crew status, active workers, open turns, message cursors, readiness, and acceptability.
 
+Event writer ownership:
+
+```text
+Watchers             -> raw evidence events only
+CompletionDetector   -> turn.completed / turn.inconclusive / turn.failed / turn.timeout
+WorkflowEngine       -> crew lifecycle, readiness, human-required
+MessageBus           -> message.created / message.delivered / message.read
+MergeTransaction     -> merge.* and verification-linked merge evidence
+VerificationAdapter  -> verification.started / verification.passed / verification.failed
+```
+
 ## Runtime Watchers
 
-The current observe loop should be replaced with a watcher pipeline. It can still poll internally at first, but the state model should be event ingestion, not "capture pane and decide."
+The current observe loop should be replaced with a watcher pipeline. It can still poll internally at first, but the state model should be evidence ingestion, not "capture pane and decide." Watchers must not emit terminal turn-state decisions.
 
 Watchers:
 
@@ -214,7 +300,7 @@ Watchers:
    Reads `transcript.txt` incrementally using byte offsets. Emits `runtime.output.appended` events. This avoids reprocessing the whole terminal snapshot.
 
 2. `OutboxWatcher`
-   Reads worker result files from `workers/<worker_id>/outbox/<turn_id>.json`. Emits `worker.outbox.detected`, `turn.completed`, or `turn.inconclusive` depending on schema validity and turn match.
+   Reads worker result files from `workers/<worker_id>/outbox/<turn_id>.json`. Emits `worker.outbox.detected` with schema validity, acknowledged message ids, and artifact refs. It does not emit `turn.completed` or `turn.inconclusive`.
 
 3. `PatchWatcher`
    Detects patch/change summaries from worker worktree or explicit patch files. Emits `worker.patch.detected` and links changed-file artifacts.
@@ -223,19 +309,20 @@ Watchers:
    Detects expected marker in new transcript output. Emits `marker.detected`. Marker is completion evidence, not the only completion condition.
 
 5. `ProcessWatcher`
-   Detects process exit or missing tmux session. Emits `runtime.process_exited` and can lead to `turn.failed` if no completion artifact exists.
+   Detects process exit or missing tmux session. Emits `runtime.process_exited`. CompletionDetector decides whether that evidence becomes `turn.failed`.
 
 6. `TimeoutWatcher`
-   Checks turn deadline and emits `turn.timeout` when no valid completion evidence exists.
+   Checks turn deadline and emits `turn.deadline_reached`. CompletionDetector decides whether that evidence becomes `turn.timeout`.
 
 Completion precedence:
 
 1. Valid outbox result for the current `turn_id` wins.
-2. Expected marker for the current turn completes if no contradictory failure exists.
-3. Contract-level marker without turn-specific result is inconclusive.
-4. Process exit before completion is failed.
-5. Deadline reached before completion is timeout.
-6. Any stale marker or quoted marker is ignored unless tied to the current turn.
+2. For source-write turns, an expected marker without a valid outbox result becomes `turn.inconclusive` with reason `missing_outbox`.
+3. For explicitly legacy/read-only turns that declare `completion_mode=marker_allowed`, an expected marker can complete the turn if no structured result is required.
+4. Contract-level marker without turn-specific result is inconclusive.
+5. Process exit before completion is failed.
+6. Deadline reached before completion is timeout.
+7. Any stale marker or quoted marker is ignored unless tied to the current turn.
 
 ## Worker Turn Protocol
 
@@ -279,6 +366,7 @@ Workers must be asked to produce a result file:
       "summary": "V4 test suite passed."
     }
   ],
+  "acknowledged_message_ids": ["msg-review-request"],
   "messages": [],
   "risks": [],
   "next_suggested_action": "review"
@@ -293,11 +381,12 @@ The message bus should become a real delivery system rather than a passive log.
 
 Changes:
 
-- `AgentMessageBus.send()` still appends messages.
+- `AgentMessageBus.send()` still appends messages and emits `message.created`.
 - A new `TurnContextBuilder` reads unread inbox messages for the target worker.
 - `send_worker` / V4 turn delivery injects unread inbox digest and open protocol requests into the turn envelope.
-- Message cursors are advanced only after `turn.delivered` or explicit `message.read`.
-- Worker outbox can include responses or handoff messages. Watchers append those to the bus and emit `message.created`.
+- `turn.delivered` records delivery to the runtime but does not advance read cursors.
+- Message cursors are advanced only after explicit `message.read` or a valid worker outbox result that acknowledges delivered message ids.
+- Worker outbox can include responses or handoff messages. `OutboxWatcher` emits raw `worker.outbox.detected`; a message-ingestion service then validates embedded messages, appends them to the bus, and emits `message.created`.
 - Delivery records should include `message_id`, `worker_id`, `turn_id`, and delivery event id.
 
 This prevents the failure mode where messages exist in storage but the worker never sees them.
@@ -370,7 +459,7 @@ Transaction stages:
    Detect same-file conflicts, dependency conflicts, API/test conflicts, generated-file conflicts, migration/config conflicts, and overlapping ownership.
 
 4. Create integration worktree.
-   Apply accepted worker patches in deterministic order.
+   Apply accepted worker patches in deterministic order from a recorded base ref and base tree hash.
 
 5. Run targeted verification.
    Use repo intelligence and worker-provided verification evidence to choose commands.
@@ -382,12 +471,21 @@ Transaction stages:
    Write merge plan, patch, conflict summary, verification result, and changed files under `merge/`.
 
 8. Update main workspace.
-   Apply the verified integration result to the user's workspace only after the transaction passes.
+   Apply the verified integration result to the user's workspace only after the transaction passes and dirty-base protection succeeds.
 
 9. Accept crew.
    Emit `crew.accepted`, finalize projections, and stop workers.
 
 If any step fails, emit a blocking event and leave worker worktrees intact for inspection.
+
+Dirty-base protection before updating the main workspace:
+
+- Record `base_ref`, `base_commit`, and `base_tree_hash` when the crew or merge transaction starts.
+- Before applying the integration result, compare the user's current `HEAD`, index, and worktree against the recorded base.
+- If `HEAD` moved, rebase or replay the integration patch onto the current `HEAD` in a fresh integration worktree and rerun final verification.
+- If the user has dirty files that overlap the integration patch, block accept and emit `human.required`.
+- If dirty files are unrelated, either preserve them with a checked patch apply or block according to a conservative `dirty_base_policy`.
+- Never overwrite a user-modified file in the main workspace without an explicit clean base check.
 
 ## CLI and UI Migration
 
@@ -415,8 +513,10 @@ The system should fail into inspectable states.
 - Worker process exit: failed if no completion evidence exists.
 - Delivery conflict: existing `turn.delivery_started` prevents duplicate sends.
 - Message delivery failure: cursor is not advanced.
+- Runtime delivery without worker acknowledgement: cursor is not advanced.
 - Scope violation: merge blocked.
 - Verification failure: merge blocked and planner receives failure evidence.
+- Dirty or diverged main workspace: accept is blocked or integration is replayed in a fresh worktree before final verification.
 - Event store duplicate: idempotency key returns existing event.
 
 ## Testing Strategy
@@ -427,20 +527,25 @@ Unit tests:
 - Projection rebuild from events.
 - Transcript tail offset handling.
 - Outbox schema validation.
+- Watchers emit only raw evidence events, never terminal turn decisions.
 - Marker detection ignores stale markers.
-- Message cursor advances only after delivery/read.
+- Marker-only source-write completion becomes inconclusive without outbox.
+- Message cursor advances only after read acknowledgement.
 - Worker reuse rejects incompatible write scope.
 - Merge arbiter detects scope and dependency conflicts.
+- Merge transaction blocks dirty-base clobbering.
 - Completion detector precedence.
 
 Integration tests:
 
 - Turn completes through outbox without marker.
-- Turn completes through marker without outbox.
+- Source-write turn with marker but no outbox becomes inconclusive.
+- Read-only legacy turn with marker and `completion_mode=marker_allowed` can complete.
 - Turn fails on process exit without completion.
 - Restart and replay resumes waiting turn without duplicate delivery.
 - Worker message round-trip appears in next turn context.
 - Accept applies patch in integration worktree and verifies before finalization.
+- Accept refuses to overwrite dirty user files that overlap the integration patch.
 
 Regression tests:
 
@@ -460,6 +565,7 @@ Target verification after implementation:
 
 Phase 1: V4 protocol foundation
 
+- Add PostgreSQL event store protocol and schema migrations.
 - Add turn context builder.
 - Add outbox result schema.
 - Add message delivery/read events.
@@ -471,7 +577,7 @@ Phase 2: Watcher pipeline
 - Add outbox watcher.
 - Add marker detector as event source.
 - Add process/timeout events.
-- Update V4 supervisor to consume watcher events.
+- Update V4 supervisor so watchers emit evidence and CompletionDetector owns terminal turn decisions.
 
 Phase 3: Merge transaction
 
@@ -479,6 +585,7 @@ Phase 3: Merge transaction
 - Add write-scope validation.
 - Add integration worktree.
 - Add final verification adapter.
+- Add dirty-base protection before main workspace update.
 - Make accept depend on merge transaction.
 
 Phase 4: V4 main path
@@ -498,12 +605,16 @@ Phase 5: Planner upgrade
 ## Acceptance Criteria
 
 - A worker can complete a turn by writing a valid outbox result even if it never prints the marker.
-- A missing marker cannot leave the crew permanently stuck in `waiting_for_worker` when other terminal evidence exists.
+- A missing marker cannot leave the crew permanently stuck in `waiting_for_worker` when valid structured evidence exists.
+- A marker alone cannot complete a source-write turn that requires an outbox result.
+- Watchers never emit terminal turn-state events.
 - The next worker turn always includes unread inbox digest and open protocol requests.
-- Message cursors are not advanced before delivery/read evidence.
+- Message cursors are not advanced before explicit read acknowledgement.
 - A worker with incompatible write scope is not reused.
 - Accept cannot finalize without a successful merge transaction and final verification in an integration workspace.
+- Accept cannot clobber dirty or diverged main-workspace changes.
 - V4 event replay can reconstruct crew status and readiness.
+- V4 event replay reads from remote PostgreSQL with schema migration/version checks.
 - CLI primary crew flow uses V4 supervisor and projections.
 - Full test suite passes.
 
