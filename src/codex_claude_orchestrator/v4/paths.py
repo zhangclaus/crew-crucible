@@ -59,7 +59,7 @@ class V4Paths:
         )
 
     def merge_path(self, name: str) -> Path:
-        return self.artifact_root / "merges" / f"{_safe_id(name, 'name')}.json"
+        return self.artifact_root / "merge" / f"{_safe_id(name, 'name')}.json"
 
     def projection_path(self, name: str) -> Path:
         return self.artifact_root / "projections" / f"{_safe_id(name, 'name')}.json"

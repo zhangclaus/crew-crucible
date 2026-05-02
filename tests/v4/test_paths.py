@@ -46,7 +46,7 @@ def test_v4_paths_resolve_worker_artifacts(tmp_path: Path) -> None:
 def test_v4_paths_resolve_crew_artifacts(tmp_path: Path) -> None:
     paths = V4Paths(repo_root=tmp_path, crew_id="crew-1")
 
-    assert paths.merge_path("merge-1") == paths.artifact_root / "merges" / "merge-1.json"
+    assert paths.merge_path("merge-1") == paths.artifact_root / "merge" / "merge-1.json"
     assert (
         paths.projection_path("crew")
         == paths.artifact_root / "projections" / "crew.json"
