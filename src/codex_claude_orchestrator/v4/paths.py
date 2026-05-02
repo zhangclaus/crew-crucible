@@ -64,6 +64,31 @@ class V4Paths:
     def projection_path(self, name: str) -> Path:
         return self.artifact_root / "projections" / f"{_safe_id(name, 'name')}.json"
 
+    @property
+    def learning_root(self) -> Path:
+        return self.artifact_root / "learning"
+
+    def learning_note_path(self, note_id: str) -> Path:
+        return self.learning_root / "notes" / f"{_safe_id(note_id, 'note_id')}.json"
+
+    def skill_candidate_path(self, candidate_id: str) -> Path:
+        return (
+            self.learning_root
+            / "skill_candidates"
+            / f"{_safe_id(candidate_id, 'candidate_id')}.json"
+        )
+
+    def guardrail_candidate_path(self, candidate_id: str) -> Path:
+        return (
+            self.learning_root
+            / "guardrail_candidates"
+            / f"{_safe_id(candidate_id, 'candidate_id')}.json"
+        )
+
+    @property
+    def worker_quality_path(self) -> Path:
+        return self.learning_root / "worker_quality.json"
+
 
 def _safe_id(value: str, field_name: str) -> str:
     if not isinstance(value, str) or not value or value.strip() != value or value == ".":

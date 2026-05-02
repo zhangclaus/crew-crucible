@@ -53,6 +53,41 @@ def test_v4_paths_resolve_crew_artifacts(tmp_path: Path) -> None:
     )
 
 
+def test_v4_paths_include_learning_artifacts(tmp_path: Path) -> None:
+    paths = V4Paths(repo_root=tmp_path, crew_id="crew-1")
+
+    assert paths.learning_root == paths.artifact_root / "learning"
+    assert (
+        paths.learning_note_path("note-1")
+        == paths.artifact_root / "learning" / "notes" / "note-1.json"
+    )
+    assert (
+        paths.skill_candidate_path("skill-1")
+        == paths.artifact_root
+        / "learning"
+        / "skill_candidates"
+        / "skill-1.json"
+    )
+    assert (
+        paths.guardrail_candidate_path("guardrail-1")
+        == paths.artifact_root
+        / "learning"
+        / "guardrail_candidates"
+        / "guardrail-1.json"
+    )
+    assert (
+        paths.worker_quality_path
+        == paths.artifact_root / "learning" / "worker_quality.json"
+    )
+
+
+def test_v4_learning_paths_reject_unsafe_ids(tmp_path: Path) -> None:
+    paths = V4Paths(repo_root=tmp_path, crew_id="crew-1")
+
+    with pytest.raises(ValueError, match="unsafe"):
+        paths.learning_note_path("../note")
+
+
 @pytest.mark.parametrize(
     "unsafe_id",
     ["", ".", " ", "\t", "/absolute", "../crew", "crew/one", "crew:one"],
