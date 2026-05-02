@@ -81,10 +81,10 @@ class LearningNotePayload(_PayloadModel):
     note_id: str
     source_challenge_ids: list[str]
     source_event_ids: list[str]
-    summary: str
+    failure_class: str
+    lesson: str
     trigger_conditions: list[str]
-    evidence_summary: str
-    confidence: float
+    scope: str
 
 
 @dataclass(frozen=True, slots=True)

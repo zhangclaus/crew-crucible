@@ -86,6 +86,28 @@ def test_learning_candidate_approval_and_activation_payloads_are_distinct() -> N
     assert activated.to_payload()["active_artifact_ref"] == "learning/skill_candidates/skill-candidate-1.json"
 
 
+def test_learning_note_payload_uses_governed_learning_spec_fields() -> None:
+    payload = LearningNotePayload(
+        note_id="note-1",
+        source_challenge_ids=["challenge-1"],
+        source_event_ids=["evt-challenge-1"],
+        failure_class="missing_verification",
+        lesson="Repairs need passed verification evidence.",
+        trigger_conditions=["repair turn", "worker claims completion"],
+        scope="v4 worker turn review",
+    )
+
+    assert payload.to_payload() == {
+        "note_id": "note-1",
+        "source_challenge_ids": ["challenge-1"],
+        "source_event_ids": ["evt-challenge-1"],
+        "failure_class": "missing_verification",
+        "lesson": "Repairs need passed verification evidence.",
+        "trigger_conditions": ["repair turn", "worker claims completion"],
+        "scope": "v4 worker turn review",
+    }
+
+
 def test_worker_quality_payload_includes_expiry() -> None:
     payload = WorkerQualityPayload(
         worker_id="worker-1",
