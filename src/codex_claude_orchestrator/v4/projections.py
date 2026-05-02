@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from codex_claude_orchestrator.v4.events import AgentEvent
+from codex_claude_orchestrator.v4.learning_projection import LearningProjection
 
 _TERMINAL_CREW_STATUSES = {"ready", "needs_human", "accepted"}
 
@@ -21,10 +22,11 @@ class CrewProjection:
     goal: str = ""
     status: str = "empty"
     turns: dict[str, TurnProjection] = field(default_factory=dict)
+    learning: LearningProjection = field(default_factory=LearningProjection)
 
     @classmethod
     def from_events(cls, events: list[AgentEvent]) -> "CrewProjection":
-        projection = cls()
+        projection = cls(learning=LearningProjection.from_events(events))
         for event in events:
             if event.crew_id:
                 if projection.crew_id and event.crew_id != projection.crew_id:
@@ -51,4 +53,6 @@ class CrewProjection:
                 projection.status = "needs_human"
             if event.type == "crew.accepted":
                 projection.status = "accepted"
+        if projection.learning.has_blocking_challenge and projection.status != "accepted":
+            projection.status = "needs_human"
         return projection
