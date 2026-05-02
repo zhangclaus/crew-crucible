@@ -23,11 +23,13 @@ class V4Supervisor:
         artifact_store: ArtifactStore,
         adapter: RuntimeAdapter,
         turn_context_builder=None,
+        adversarial_evaluator=None,
     ) -> None:
         self._events = event_store
         self._artifacts = artifact_store
         self._adapter = adapter
         self._turn_context_builder = turn_context_builder
+        self._adversarial_evaluator = adversarial_evaluator
         self._turns = TurnService(event_store=event_store, adapter=adapter)
         self._workflow = V4WorkflowEngine(event_store=event_store)
         self._completion = CompletionDetector()
@@ -108,7 +110,7 @@ class V4Supervisor:
             return terminal_result
 
         decision = self._completion.evaluate(turn, runtime_events)
-        self._events.append(
+        terminal_event = self._events.append(
             stream_id=crew_id,
             type=decision.event_type,
             crew_id=crew_id,
@@ -120,6 +122,8 @@ class V4Supervisor:
             payload={"reason": decision.reason},
             artifact_refs=decision.evidence_refs,
         )
+        if terminal_event.type == "turn.completed" and self._adversarial_evaluator is not None:
+            self._adversarial_evaluator.evaluate_completed_turn(terminal_event)
         if decision.event_type == "turn.completed":
             return {"crew_id": crew_id, "status": "turn_completed", "turn_id": turn.turn_id}
         return {

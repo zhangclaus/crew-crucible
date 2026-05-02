@@ -51,6 +51,15 @@ class FakeTurnContextBuilder:
         )()
 
 
+class FakeAdversarialEvaluator:
+    def __init__(self):
+        self.completed_events = []
+
+    def evaluate_completed_turn(self, completed_event):
+        self.completed_events.append(completed_event)
+        return completed_event
+
+
 def test_v4_supervisor_runs_until_turn_completed(tmp_path: Path):
     store = SQLiteEventStore(tmp_path / "events.sqlite3")
     supervisor = V4Supervisor(
@@ -81,6 +90,50 @@ def test_v4_supervisor_runs_until_turn_completed(tmp_path: Path):
         "worker.outbox.detected",
         "turn.completed",
     ]
+
+
+def test_v4_supervisor_invokes_adversarial_evaluator_after_turn_completed(tmp_path: Path):
+    store = SQLiteEventStore(tmp_path / "events.sqlite3")
+    evaluator = FakeAdversarialEvaluator()
+    supervisor = V4Supervisor(
+        event_store=store,
+        artifact_store=ArtifactStore(tmp_path / "artifacts"),
+        adapter=FakeAdapter(lambda turn: [completed_outbox_event(turn)]),
+        adversarial_evaluator=evaluator,
+    )
+
+    supervisor.run_source_turn(
+        crew_id="crew-1",
+        goal="Fix tests",
+        worker_id="worker-1",
+        round_id="round-1",
+        message="Implement",
+        expected_marker="marker-1",
+    )
+
+    assert [event.type for event in evaluator.completed_events] == ["turn.completed"]
+
+
+def test_v4_supervisor_does_not_invoke_adversarial_evaluator_for_waiting_turn(tmp_path: Path):
+    store = SQLiteEventStore(tmp_path / "events.sqlite3")
+    evaluator = FakeAdversarialEvaluator()
+    supervisor = V4Supervisor(
+        event_store=store,
+        artifact_store=ArtifactStore(tmp_path / "artifacts"),
+        adapter=FakeAdapter([]),
+        adversarial_evaluator=evaluator,
+    )
+
+    supervisor.run_source_turn(
+        crew_id="crew-1",
+        goal="Fix tests",
+        worker_id="worker-1",
+        round_id="round-1",
+        message="Implement",
+        expected_marker="marker-1",
+    )
+
+    assert evaluator.completed_events == []
 
 
 def test_v4_supervisor_keeps_marker_only_source_turn_waiting(tmp_path: Path):
