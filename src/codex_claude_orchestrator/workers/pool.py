@@ -32,6 +32,7 @@ from codex_claude_orchestrator.core.models import WorkspaceAllocation, Workspace
 from codex_claude_orchestrator.runtime.native_claude_session import NativeClaudeSession
 from codex_claude_orchestrator.messaging.protocol_requests import ProtocolRequestStore
 from codex_claude_orchestrator.workspace.worktree_manager import WorktreeManager
+from codex_claude_orchestrator.crew.scope import scope_covers_all as _scope_covers_all
 
 
 class WorkerPool:
@@ -200,6 +201,8 @@ class WorkerPool:
             if not self._authority_covers(worker.get("authority_level", AuthorityLevel.READONLY.value), contract.authority_level):
                 continue
             if worker.get("workspace_mode") != self._workspace_mode_for_contract(contract).value:
+                continue
+            if not _scope_covers_all(worker.get("write_scope", []), contract.write_scope):
                 continue
             return worker
         return None
