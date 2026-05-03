@@ -41,6 +41,7 @@ class WorkerRole(StrEnum):
 class WorkerStatus(StrEnum):
     CREATED = "created"
     RUNNING = "running"
+    BUSY = "busy"
     IDLE = "idle"
     FAILED = "failed"
     STOPPED = "stopped"
