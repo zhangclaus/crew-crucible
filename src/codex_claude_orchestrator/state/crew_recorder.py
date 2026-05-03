@@ -89,6 +89,31 @@ class CrewRecorder:
                 return worker
         raise FileNotFoundError(f"worker not found: {worker_id}")
 
+    def transition_worker_status(
+        self,
+        crew_id: str,
+        worker_id: str,
+        expected_status: str,
+        new_status: str,
+    ) -> bool:
+        """Atomically transition worker status with optimistic locking.
+
+        Returns True if transition succeeded, False if current status
+        doesn't match expected_status.
+        """
+        path = self._crew_dir(crew_id) / "workers.jsonl"
+        workers = self._read_jsonl(path)
+        for worker in workers:
+            if worker["worker_id"] == worker_id:
+                current = worker.get("status", "running")
+                if current != expected_status:
+                    return False
+                worker["status"] = new_status
+                worker["updated_at"] = utc_now()
+                self._write_jsonl(path, workers)
+                return True
+        return False
+
     def write_tasks(self, crew_id: str, tasks: list[CrewTaskRecord]) -> None:
         self._write_json(self._crew_dir(crew_id) / "tasks.json", [task.to_dict() for task in tasks])
 
