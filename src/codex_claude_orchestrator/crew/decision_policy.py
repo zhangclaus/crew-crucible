@@ -58,7 +58,7 @@ class CrewDecisionPolicy:
 
         if (
             changed_files
-            and self._goal_needs_browser(snapshot.get("goal", ""))
+            and (self._goal_needs_browser(snapshot.get("goal", "")) or "frontend" in snapshot.get("repo_risk_tags", []))
             and snapshot.get("review_status") == "ok"
             and not snapshot.get("browser_check_status")
             and not self._has_capability(workers, "browser_e2e")
@@ -207,19 +207,19 @@ class CrewDecisionPolicy:
 
     def _has_source_write_worker(self, workers: list[dict]) -> bool:
         return any(
-            worker.get("status") not in {"failed", "stopped"}
+            worker.get("status") in {"running", "idle"}
             and worker.get("authority_level") == AuthorityLevel.SOURCE_WRITE.value
             for worker in workers
         )
 
     def _source_write_worker_id(self, workers: list[dict]) -> str | None:
         for worker in workers:
-            if worker.get("authority_level") == AuthorityLevel.SOURCE_WRITE.value and worker.get("status") not in {"failed", "stopped"}:
+            if worker.get("authority_level") == AuthorityLevel.SOURCE_WRITE.value and worker.get("status") in {"running", "idle"}:
                 return worker.get("worker_id")
         return None
 
     def _has_capability(self, workers: list[dict], capability: str) -> bool:
-        return any(worker.get("status") not in {"failed", "stopped"} and capability in worker.get("capabilities", []) for worker in workers)
+        return any(worker.get("status") in {"running", "idle"} and capability in worker.get("capabilities", []) for worker in workers)
 
     def _goal_needs_browser(self, goal: str) -> bool:
         normalized = goal.lower()

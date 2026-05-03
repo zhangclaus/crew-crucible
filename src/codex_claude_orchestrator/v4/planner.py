@@ -46,7 +46,7 @@ class PlannerPolicy:
 
 
 def _is_active(worker: dict[str, Any]) -> bool:
-    return worker.get("status", "running") not in {"failed", "stopped"}
+    return worker.get("status", "running") in {"running", "idle"}
 
 
 def _authority_covers(worker_authority: str, required_authority: str) -> bool:
