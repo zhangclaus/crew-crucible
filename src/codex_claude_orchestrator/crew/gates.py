@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, fields, is_dataclass
 from enum import StrEnum
-from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any
+
+from codex_claude_orchestrator.crew.scope import is_protected as _is_protected_path, scope_covers
 
 
 DEFAULT_PROTECTED_PATTERNS = [
@@ -116,19 +117,7 @@ class WriteScopeGate:
         )
 
     def _is_in_scope(self, path: str, write_scope: list[str]) -> bool:
-        for scope in write_scope:
-            if scope.endswith("/"):
-                if path.startswith(scope):
-                    return True
-            elif path == scope or path.startswith(f"{scope}/"):
-                return True
-        return False
+        return scope_covers(write_scope, path)
 
     def _is_protected(self, path: str) -> bool:
-        for pattern in self.protected_patterns:
-            if pattern.endswith("/"):
-                if path.startswith(pattern):
-                    return True
-            elif fnmatch(path, pattern):
-                return True
-        return False
+        return _is_protected_path(path, self.protected_patterns)
