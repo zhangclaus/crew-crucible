@@ -403,6 +403,14 @@ class CrewController:
         stop_result = self._worker_pool.stop_crew(repo_root=repo_root, crew_id=crew_id)
         return stop_result
 
+    def claim_worker(self, crew_id: str, worker_id: str) -> None:
+        """Transition worker to BUSY. Delegates to worker pool."""
+        self._worker_pool.claim_worker(crew_id, worker_id)
+
+    def release_worker(self, crew_id: str, worker_id: str) -> None:
+        """Transition worker to IDLE. Delegates to worker pool."""
+        self._worker_pool.release_worker(crew_id, worker_id)
+
     def prune_orphans(self, *, repo_root: Path) -> dict:
         return self._worker_pool.prune_orphans(repo_root=repo_root)
 
