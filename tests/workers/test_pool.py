@@ -175,6 +175,56 @@ def test_worker_pool_can_send_observe_attach_tail_and_status_existing_worker(tmp
     assert fake_native.sends[0]["terminal_pane"] == "crew-1-worker-explorer:claude.0"
 
 
+def test_worker_pool_rejects_reuse_when_write_scope_is_incompatible(tmp_path: Path):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    recorder = CrewRecorder(repo_root / ".orchestrator")
+    crew = CrewRecord(crew_id="crew-1", root_goal="Edit src", repo=repo_root)
+    recorder.start_crew(crew)
+    recorder.append_worker(
+        crew.crew_id,
+        WorkerRecord(
+            worker_id="worker-source-docs",
+            crew_id=crew.crew_id,
+            role=WorkerRole.IMPLEMENTER,
+            agent_profile="claude",
+            native_session_id="native-docs",
+            terminal_session="session-docs",
+            terminal_pane="session-docs:claude.0",
+            transcript_artifact="workers/worker-source-docs/transcript.txt",
+            turn_marker="marker",
+            workspace_mode=WorkspaceMode.WORKTREE,
+            workspace_path=str(repo_root),
+            capabilities=["edit_source"],
+            authority_level=AuthorityLevel.SOURCE_WRITE,
+            write_scope=["docs/"],
+            status=WorkerStatus.RUNNING,
+        ),
+    )
+    recorder.update_crew(crew.crew_id, {"active_worker_ids": ["worker-source-docs"]})
+    pool = WorkerPool(
+        recorder=recorder,
+        blackboard=BlackboardStore(recorder),
+        worktree_manager=FakeWorktreeManager(),
+        native_session=FakeNativeSession(),
+    )
+
+    worker = pool.find_compatible_worker(
+        crew.crew_id,
+        WorkerContract(
+            contract_id="contract-src",
+            label="source",
+            mission="Edit src",
+            required_capabilities=["edit_source"],
+            authority_level=AuthorityLevel.SOURCE_WRITE,
+            workspace_policy=WorkspacePolicy.WORKTREE,
+            write_scope=["src/"],
+        ),
+    )
+
+    assert worker is None
+
+
 def test_worker_pool_can_stop_workers_and_prune_orphan_tmux_sessions(tmp_path: Path):
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
@@ -427,3 +477,115 @@ def test_worker_pool_observe_creates_and_resolves_protocol_requests_from_codex_m
     assert [request["status"] for request in details["protocol_requests"]] == ["pending", "approved"]
     assert details["protocol_requests"][0]["request_id"] == "req-plan"
     assert details["protocol_requests"][0]["subject"] == "I need approval to edit src/api.py."
+
+
+def _make_pool_with_running_worker(tmp_path: Path, *, status: str = "running", worker_id: str = "worker-explorer"):
+    """Helper: create a pool with a single worker in the given status."""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    recorder = CrewRecorder(repo_root / ".orchestrator")
+    crew = CrewRecord(crew_id="crew-1", root_goal="Goal", repo=repo_root)
+    recorder.start_crew(crew)
+    recorder.append_worker(
+        crew.crew_id,
+        WorkerRecord(
+            worker_id=worker_id,
+            crew_id=crew.crew_id,
+            role=WorkerRole.EXPLORER,
+            agent_profile="claude",
+            native_session_id="native-1",
+            terminal_session="session-1",
+            terminal_pane="session-1:claude.0",
+            transcript_artifact="workers/{}/transcript.txt".format(worker_id),
+            turn_marker="marker",
+            workspace_mode=WorkspaceMode.READONLY,
+            workspace_path=str(repo_root),
+            status=WorkerStatus.RUNNING if status == "running" else WorkerStatus(status),
+        ),
+    )
+    if status == "running":
+        recorder.update_worker(crew.crew_id, worker_id, {"status": status})
+    recorder.update_crew(crew.crew_id, {"active_worker_ids": [worker_id]})
+    pool = WorkerPool(
+        recorder=recorder,
+        blackboard=BlackboardStore(recorder),
+        worktree_manager=FakeWorktreeManager(),
+        native_session=FakeNativeSession(),
+        event_id_factory=lambda: "event-claim",
+    )
+    return pool, crew, recorder
+
+
+def test_claim_worker_transitions_running_to_busy(tmp_path: Path):
+    pool, crew, recorder = _make_pool_with_running_worker(tmp_path, status="running")
+
+    pool.claim_worker(crew.crew_id, "worker-explorer")
+
+    worker = next(w for w in recorder.read_crew(crew.crew_id)["workers"] if w["worker_id"] == "worker-explorer")
+    assert worker["status"] == "busy"
+    event = recorder.read_crew(crew.crew_id)["events"][-1]
+    assert event["type"] == "worker_claimed"
+    assert event["worker_id"] == "worker-explorer"
+
+
+def test_release_worker_transitions_busy_to_idle(tmp_path: Path):
+    pool, crew, recorder = _make_pool_with_running_worker(tmp_path, status="busy")
+
+    pool.release_worker(crew.crew_id, "worker-explorer")
+
+    worker = next(w for w in recorder.read_crew(crew.crew_id)["workers"] if w["worker_id"] == "worker-explorer")
+    assert worker["status"] == "idle"
+    event = recorder.read_crew(crew.crew_id)["events"][-1]
+    assert event["type"] == "worker_released"
+
+
+def test_claim_worker_rejects_busy_worker(tmp_path: Path):
+    pool, crew, recorder = _make_pool_with_running_worker(tmp_path, status="busy")
+
+    import pytest
+    with pytest.raises(ValueError, match="Cannot claim worker"):
+        pool.claim_worker(crew.crew_id, "worker-explorer")
+
+
+def test_release_worker_is_idempotent_when_not_busy(tmp_path: Path):
+    pool, crew, recorder = _make_pool_with_running_worker(tmp_path, status="running")
+    events_before = len(recorder.read_crew(crew.crew_id)["events"])
+
+    pool.release_worker(crew.crew_id, "worker-explorer")
+
+    worker = next(w for w in recorder.read_crew(crew.crew_id)["workers"] if w["worker_id"] == "worker-explorer")
+    assert worker["status"] == "running"
+    assert len(recorder.read_crew(crew.crew_id)["events"]) == events_before
+
+
+def test_find_compatible_worker_excludes_busy(tmp_path: Path):
+    pool, crew, recorder = _make_pool_with_running_worker(tmp_path, status="busy")
+    contract = WorkerContract(
+        contract_id="c1",
+        label="explorer",
+        mission="Explore.",
+        required_capabilities=[],
+        authority_level=AuthorityLevel.READONLY,
+        workspace_policy=WorkspacePolicy.READONLY,
+    )
+
+    result = pool.find_compatible_worker(crew.crew_id, contract)
+
+    assert result is None
+
+
+def test_find_compatible_worker_finds_idle_worker(tmp_path: Path):
+    pool, crew, recorder = _make_pool_with_running_worker(tmp_path, status="idle")
+    contract = WorkerContract(
+        contract_id="c1",
+        label="explorer",
+        mission="Explore.",
+        required_capabilities=[],
+        authority_level=AuthorityLevel.READONLY,
+        workspace_policy=WorkspacePolicy.READONLY,
+    )
+
+    result = pool.find_compatible_worker(crew.crew_id, contract)
+
+    assert result is not None
+    assert result["worker_id"] == "worker-explorer"

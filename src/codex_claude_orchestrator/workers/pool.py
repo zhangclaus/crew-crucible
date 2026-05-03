@@ -194,7 +194,8 @@ class WorkerPool:
         for worker in details["workers"]:
             if worker["worker_id"] not in active_worker_ids:
                 continue
-            if is_terminal_worker_status(worker.get("status", WorkerStatus.RUNNING.value)):
+            status = worker.get("status", "running")
+            if status not in {"running", "idle"}:
                 continue
             if not required.issubset(set(worker.get("capabilities", []))):
                 continue
@@ -319,6 +320,37 @@ class WorkerPool:
             stopped_workers.append({"worker_id": worker["worker_id"], **result})
         self._recorder.update_crew(crew_id, {"active_worker_ids": []})
         return {"crew_id": crew_id, "stopped_workers": stopped_workers}
+
+    def claim_worker(self, crew_id: str, worker_id: str) -> None:
+        """Transition worker from RUNNING/IDLE to BUSY."""
+        worker = self._find_worker(crew_id, worker_id)
+        current = worker.get("status", "running")
+        if current not in {"running", "idle"}:
+            raise ValueError(f"Cannot claim worker {worker_id} in status {current}")
+        self._recorder.update_worker(crew_id, worker_id, {"status": "busy"})
+        self._recorder.append_event(crew_id, CrewEvent(
+            event_id=self._event_id_factory(),
+            crew_id=crew_id,
+            worker_id=worker_id,
+            contract_id=None,
+            type="worker_claimed",
+            status="completed",
+        ))
+
+    def release_worker(self, crew_id: str, worker_id: str) -> None:
+        """Transition worker from BUSY to IDLE (idempotent)."""
+        worker = self._find_worker(crew_id, worker_id)
+        if worker.get("status") != "busy":
+            return  # idempotent
+        self._recorder.update_worker(crew_id, worker_id, {"status": "idle"})
+        self._recorder.append_event(crew_id, CrewEvent(
+            event_id=self._event_id_factory(),
+            crew_id=crew_id,
+            worker_id=worker_id,
+            contract_id=None,
+            type="worker_released",
+            status="completed",
+        ))
 
     def prune_orphans(self, *, repo_root: Path) -> dict:
         return self._native_session.prune_orphans(active_sessions=self._active_terminal_sessions())
