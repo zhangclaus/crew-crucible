@@ -145,3 +145,25 @@ def test_parse_decision_challenge():
 def test_parse_decision_unknown_defaults_to_observe():
     loop = CrewSupervisorLoop(controller=MagicMock())
     assert loop._parse_decision("I'm not sure what to do") == {"action": "observe"}
+
+
+def test_run_executes_spawn_decision_when_verify_passes():
+    """When verification passes but supervisor says spawn, execute the spawn decision."""
+    controller = MagicMock()
+    controller.status.return_value = {
+        "crew": {"crew_id": "c1", "root_goal": "test", "status": "running"},
+        "workers": [{"worker_id": "w1", "status": "idle", "role": "implementer"}],
+        "blackboard": [], "decisions": [], "messages": [],
+    }
+    loop = CrewSupervisorLoop(controller=controller)
+
+    async def mock_sampling(messages, system_prompt, max_tokens):
+        result = MagicMock()
+        result.content.text = 'spawn_worker(label="fixer", mission="fix the tests")'
+        return result
+
+    with patch.object(loop, "_wait_for_workers"), \
+         patch.object(loop, "_auto_verify", return_value={"passed": True, "failure_count": 0}):
+        result = loop.run(crew_id="c1", max_rounds=1, verification_commands=["pytest"], sampling_fn=mock_sampling)
+
+    controller.ensure_worker.assert_called_once()

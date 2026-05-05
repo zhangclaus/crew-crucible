@@ -10,7 +10,6 @@ from codex_claude_orchestrator.crew.models import DecisionAction, DecisionAction
 from codex_claude_orchestrator.crew.readiness import CrewReadinessEvaluator
 from codex_claude_orchestrator.crew.review_verdict import ReviewVerdict, ReviewVerdictParser
 from codex_claude_orchestrator.runtime.marker_policy import MarkerObservationPolicy
-from codex_claude_orchestrator.workers.selection import WorkerSelectionPolicy
 
 
 _TURN_DONE_PREFIX = "<<<CODEX_TURN_DONE"
@@ -44,6 +43,9 @@ class CrewSupervisorLoop:
                 decision = self._ask_supervisor(sampling_fn, crew_id, "verification_passed", verify_result)
                 if decision.get("action") == "accept":
                     return self._do_accept(crew_id)
+                # Execute non-accept decisions (spawn, challenge)
+                self._execute_decision(crew_id, decision)
+                continue
             failure_count = verify_result.get("failure_count", 0)
             if failure_count >= 3:
                 decision = self._ask_supervisor(sampling_fn, crew_id, "verification_failed", verify_result)
