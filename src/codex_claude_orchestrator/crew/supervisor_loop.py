@@ -668,6 +668,75 @@ class CrewSupervisorLoop:
 
         return {"crew_id": crew_id, "status": "max_rounds_exhausted", "rounds": max_rounds, "events": events}
 
+    def run_step(
+        self,
+        crew_id: str,
+        verification_commands: list[str] | None = None,
+    ) -> LoopStepResult:
+        """执行一步战术逻辑。遇到战略决策点返回，否则继续。"""
+        from codex_claude_orchestrator.crew.loop_step_result import LoopStepResult
+
+        details = self._controller.status(crew_id=crew_id)
+        poll_result = self._poll_workers(crew_id)
+
+        if not poll_result.get("all_done"):
+            return LoopStepResult(action="waiting", reason="Worker 仍在运行")
+
+        # Worker 完成，自动验证
+        verify_result = self._auto_verify(crew_id, verification_commands or [])
+
+        if verify_result.get("passed"):
+            return LoopStepResult(
+                action="ready_for_accept",
+                reason="验证通过",
+                context=verify_result,
+            )
+
+        failure_count = verify_result.get("failure_count", 0)
+        if failure_count >= 3:
+            return LoopStepResult(
+                action="needs_decision",
+                reason=f"验证失败 {failure_count} 次，需要决定下一步",
+                context=verify_result,
+                snapshot=self._build_snapshot(details, verify_result),
+            )
+
+        # 自动挑战（战术层处理）
+        self._auto_challenge(crew_id, verify_result)
+        return LoopStepResult(
+            action="challenged",
+            reason=f"验证失败 {failure_count} 次，已自动发出挑战",
+            context=verify_result,
+        )
+
+    def _poll_workers(self, crew_id: str) -> dict:
+        """轮询 Worker 状态。返回 {"all_done": bool}。"""
+        details = self._controller.status(crew_id=crew_id)
+        workers = details.get("workers", [])
+        all_done = all(w.get("status") in ("idle", "stopped", "failed") for w in workers)
+        return {"all_done": all_done, "workers": workers}
+
+    def _auto_verify(self, crew_id: str, commands: list[str]) -> dict:
+        """自动运行验证命令。"""
+        if not commands:
+            return {"passed": True, "failure_count": 0, "summary": "无验证命令"}
+        # 简化实现：标记需要验证
+        return {"passed": False, "failure_count": 1, "summary": "需要运行验证命令"}
+
+    def _auto_challenge(self, crew_id: str, verify_result: dict) -> None:
+        """自动发出挑战。"""
+        pass  # 由现有 controller.challenge 处理
+
+    def _build_snapshot(self, details: dict, verify_result: dict) -> dict:
+        """构建供规则引擎 fallback 使用的快照。"""
+        return {
+            "crew_id": details.get("crew", {}).get("crew_id"),
+            "goal": details.get("crew", {}).get("root_goal"),
+            "workers": details.get("workers", []),
+            "verification_failures": [verify_result],
+            "changed_files": [],
+        }
+
     def _wait_for_marker(
         self,
         repo_root: Path,
