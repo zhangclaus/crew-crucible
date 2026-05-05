@@ -71,6 +71,7 @@ def test_crew_blackboard_filters_by_entry_type():
 
 
 def test_crew_events_calls_controller():
+    from pathlib import Path
     server = FakeServer()
     controller = MagicMock()
     controller.status.return_value = {
@@ -79,10 +80,10 @@ def test_crew_events_calls_controller():
     }
     register_context_tools(server, controller)
     import asyncio
-    result = asyncio.run(server.tools["crew_events"](crew_id="c1"))
+    result = asyncio.run(server.tools["crew_events"](repo="/repo", crew_id="c1"))
     data = json.loads(result[0].text)
     assert len(data) == 2
-    controller.status.assert_called_once_with(crew_id="c1")
+    controller.status.assert_called_once_with(repo_root=Path("/repo"), crew_id="c1")
 
 
 def test_crew_events_filters_non_key_events():
@@ -100,20 +101,24 @@ def test_crew_events_filters_non_key_events():
     }
     register_context_tools(server, controller)
     import asyncio
-    result = asyncio.run(server.tools["crew_events"](crew_id="c1"))
+    result = asyncio.run(server.tools["crew_events"](repo="/repo", crew_id="c1"))
     data = json.loads(result[0].text)
     assert len(data) == 2
 
 
 def test_crew_observe_calls_controller():
+    from pathlib import Path
     server = FakeServer()
     controller = MagicMock()
     controller.observe_worker.return_value = {"snapshot": "worker output here"}
     register_context_tools(server, controller)
     import asyncio
-    result = asyncio.run(server.tools["crew_observe"](crew_id="c1", worker_id="w1"))
+    result = asyncio.run(server.tools["crew_observe"](repo="/repo", crew_id="c1", worker_id="w1"))
     data = json.loads(result[0].text)
     assert "snapshot" in data
+    controller.observe_worker.assert_called_once_with(
+        repo_root=Path("/repo"), crew_id="c1", worker_id="w1",
+    )
 
 
 def test_crew_changes_calls_controller():

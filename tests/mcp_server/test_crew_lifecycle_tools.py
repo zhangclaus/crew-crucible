@@ -24,6 +24,7 @@ def test_crew_start_registered():
     assert "crew_status" in server.tools
     assert "crew_spawn" in server.tools
     assert "crew_stop_worker" in server.tools
+    assert "crew_verify" in server.tools
 
 
 def test_crew_status_calls_compress():
@@ -38,7 +39,7 @@ def test_crew_status_calls_compress():
     }
     register_lifecycle_tools(server, controller)
     import asyncio
-    result = asyncio.run(server.tools["crew_status"](crew_id="c1"))
+    result = asyncio.run(server.tools["crew_status"](repo="/repo", crew_id="c1"))
     data = json.loads(result[0].text)
     assert data["crew_id"] == "c1"
     assert "workers" in data

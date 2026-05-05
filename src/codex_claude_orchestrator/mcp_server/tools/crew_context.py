@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from mcp.server import Server
 from mcp.types import TextContent
@@ -27,17 +28,17 @@ def register_context_tools(server: Server, controller) -> None:
         return [TextContent(type="text", text=truncate_json(filtered))]
 
     @server.tool("crew_events")
-    async def crew_events(crew_id: str, limit: int = 20) -> list[TextContent]:
+    async def crew_events(repo: str, crew_id: str, limit: int = 20) -> list[TextContent]:
         """读取关键事件（过滤中间事件，默认最近 20 条）。"""
-        raw = controller.status(crew_id=crew_id)
+        raw = controller.status(repo_root=Path(repo), crew_id=crew_id)
         events = raw.get("decisions", []) + raw.get("messages", [])
         filtered = filter_events(events, limit=limit)
         return [TextContent(type="text", text=truncate_json(filtered))]
 
     @server.tool("crew_observe")
-    async def crew_observe(crew_id: str, worker_id: str) -> list[TextContent]:
+    async def crew_observe(repo: str, crew_id: str, worker_id: str) -> list[TextContent]:
         """观察某个 Worker 的当前轮次输出。"""
-        observation = controller.observe_worker(crew_id=crew_id, worker_id=worker_id)
+        observation = controller.observe_worker(repo_root=Path(repo), crew_id=crew_id, worker_id=worker_id)
         return [TextContent(type="text", text=truncate_json(observation))]
 
     @server.tool("crew_changes")

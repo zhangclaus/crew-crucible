@@ -31,6 +31,7 @@ def test_server_registers_all_tool_modules():
     assert "crew_status" in registered_names
     assert "crew_spawn" in registered_names
     assert "crew_stop_worker" in registered_names
+    assert "crew_verify" in registered_names
 
     # Context tools
     assert "crew_blackboard" in registered_names

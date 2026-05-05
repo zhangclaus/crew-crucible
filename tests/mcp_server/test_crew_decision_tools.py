@@ -31,9 +31,20 @@ def test_crew_accept():
     controller.accept.return_value = {"status": "accepted"}
     register_decision_tools(server, controller)
     import asyncio
-    result = asyncio.run(server.tools["crew_accept"](crew_id="c1"))
+    result = asyncio.run(server.tools["crew_accept"](crew_id="c1", summary="looks good"))
     data = json.loads(result[0].text)
     assert data["status"] == "accepted"
+    controller.accept.assert_called_once_with(crew_id="c1", summary="looks good")
+
+
+def test_crew_accept_default_summary():
+    server = FakeServer()
+    controller = MagicMock()
+    controller.accept.return_value = {"status": "accepted"}
+    register_decision_tools(server, controller)
+    import asyncio
+    asyncio.run(server.tools["crew_accept"](crew_id="c1"))
+    controller.accept.assert_called_once_with(crew_id="c1", summary="accepted by supervisor")
 
 
 def test_crew_challenge():
@@ -42,5 +53,5 @@ def test_crew_challenge():
     controller.challenge.return_value = {"status": "challenged"}
     register_decision_tools(server, controller)
     import asyncio
-    result = asyncio.run(server.tools["crew_challenge"](crew_id="c1", worker_id="w1", goal="fix the bug"))
-    controller.challenge.assert_called_once()
+    result = asyncio.run(server.tools["crew_challenge"](crew_id="c1", summary="fix the bug"))
+    controller.challenge.assert_called_once_with(crew_id="c1", summary="fix the bug", task_id=None)

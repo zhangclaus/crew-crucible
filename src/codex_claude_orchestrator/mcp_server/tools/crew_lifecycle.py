@@ -75,17 +75,27 @@ def register_lifecycle_tools(server: Server, controller) -> None:
         }))]
 
     @server.tool("crew_stop")
-    async def crew_stop(crew_id: str) -> list[TextContent]:
+    async def crew_stop(repo: str, crew_id: str) -> list[TextContent]:
         """停止整个 Crew。"""
-        controller.stop(crew_id=crew_id)
+        controller.stop(repo_root=Path(repo), crew_id=crew_id)
         return [TextContent(type="text", text=json.dumps({"status": "stopped", "crew_id": crew_id}))]
 
     @server.tool("crew_status")
-    async def crew_status(crew_id: str) -> list[TextContent]:
+    async def crew_status(repo: str, crew_id: str) -> list[TextContent]:
         """获取 Crew 状态摘要（压缩后，非原始 dump）。"""
-        raw = controller.status(crew_id=crew_id)
+        raw = controller.status(repo_root=Path(repo), crew_id=crew_id)
         compressed = compress_crew_status(raw)
         return [TextContent(type="text", text=json.dumps(compressed, ensure_ascii=False))]
+
+    @server.tool("crew_verify")
+    async def crew_verify(
+        crew_id: str,
+        command: str,
+        worker_id: str | None = None,
+    ) -> list[TextContent]:
+        """Run a verification command (e.g. pytest, ruff check)."""
+        result = controller.verify(crew_id=crew_id, command=command, worker_id=worker_id)
+        return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False))]
 
     @server.tool("crew_spawn")
     async def crew_spawn(
