@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from codex_claude_orchestrator.v4.event_stream import FilesystemRuntimeEventStream
 from codex_claude_orchestrator.v4.runtime import (
     CancellationResult,
     DeliveryResult,
@@ -12,7 +13,6 @@ from codex_claude_orchestrator.v4.runtime import (
     WorkerHandle,
     WorkerSpec,
 )
-from codex_claude_orchestrator.v4.watchers import OutboxWatcher
 
 
 def _non_empty_str(value) -> str:
@@ -27,7 +27,6 @@ class ClaudeCodeTmuxAdapter:
     def __init__(self, *, native_session):
         self._native_session = native_session
         self._workers: dict[str, WorkerSpec] = {}
-        self._outbox_watcher = OutboxWatcher()
 
     def register_worker(self, spec: WorkerSpec) -> WorkerHandle:
         self._workers[spec.worker_id] = spec
@@ -43,6 +42,7 @@ class ClaudeCodeTmuxAdapter:
     def deliver_turn(self, turn: TurnEnvelope) -> DeliveryResult:
         worker = self._workers.get(turn.worker_id)
         terminal_pane = _terminal_pane_for(turn, worker)
+        self._initialize_filesystem_stream(turn, worker)
         result = self._native_session.send(
             terminal_pane=terminal_pane,
             message=_compiled_turn_message(turn),
@@ -65,7 +65,7 @@ class ClaudeCodeTmuxAdapter:
     def watch_turn(self, turn: TurnEnvelope):
         worker = self._workers.get(turn.worker_id)
         terminal_pane = _terminal_pane_for(turn, worker)
-        yield from self._watch_required_outbox(turn)
+        yield from self._watch_filesystem_stream(turn, worker)
         try:
             observation = self._native_session.observe(
                 terminal_pane=terminal_pane,
@@ -104,16 +104,57 @@ class ClaudeCodeTmuxAdapter:
                 artifact_refs=artifact_refs,
             )
 
-    def _watch_required_outbox(self, turn: TurnEnvelope):
-        required_outbox_path = _non_empty_str(turn.required_outbox_path)
-        if required_outbox_path:
-            yield from self._outbox_watcher.watch(
-                crew_id=turn.crew_id,
-                turn_id=turn.turn_id,
-                worker_id=turn.worker_id,
-                outbox_path=Path(required_outbox_path),
-                artifact_ref=_required_outbox_artifact_ref(turn),
+    def _watch_filesystem_stream(self, turn: TurnEnvelope, worker: WorkerSpec | None):
+        outbox_path = _required_outbox_path(turn)
+        transcript_path = _transcript_path(worker)
+        if outbox_path is None and transcript_path is None:
+            return
+        stream = FilesystemRuntimeEventStream(
+            state_path=_filesystem_stream_state_path(
+                outbox_path=outbox_path,
+                transcript_path=transcript_path,
             )
+        )
+        yield from stream.poll_once(
+            crew_id=turn.crew_id,
+            turn_id=turn.turn_id,
+            worker_id=turn.worker_id,
+            outbox_path=outbox_path,
+            transcript_path=transcript_path,
+            expected_marker=turn.expected_marker,
+            outbox_artifact_ref=_required_outbox_artifact_ref(turn) if outbox_path else None,
+            transcript_artifact_ref=(
+                _transcript_artifact_ref(worker, transcript_path)
+                if transcript_path is not None
+                else None
+            ),
+            autocommit=False,
+        )
+
+    def _initialize_filesystem_stream(self, turn: TurnEnvelope, worker: WorkerSpec | None) -> None:
+        transcript_path = _transcript_path(worker)
+        if transcript_path is None:
+            return
+        stream = FilesystemRuntimeEventStream(
+            state_path=_filesystem_stream_state_path(
+                outbox_path=_required_outbox_path(turn),
+                transcript_path=transcript_path,
+            )
+        )
+        stream.initialize_turn(turn_id=turn.turn_id, transcript_path=transcript_path)
+
+    def commit_runtime_events(self, turn: TurnEnvelope, events: list[RuntimeEvent]) -> None:
+        worker = self._workers.get(turn.worker_id)
+        outbox_path = _required_outbox_path(turn)
+        transcript_path = _transcript_path(worker)
+        if outbox_path is None and transcript_path is None:
+            return
+        FilesystemRuntimeEventStream(
+            state_path=_filesystem_stream_state_path(
+                outbox_path=outbox_path,
+                transcript_path=transcript_path,
+            )
+        ).commit_events(events)
 
     def collect_artifacts(self, turn: TurnEnvelope) -> list[str]:
         worker = self._workers.get(turn.worker_id)
@@ -200,3 +241,44 @@ def _compiled_turn_message(turn: TurnEnvelope) -> str:
 
 def _required_outbox_artifact_ref(turn: TurnEnvelope) -> str:
     return f"workers/{turn.worker_id}/outbox/{turn.turn_id}.json"
+
+
+def _required_outbox_path(turn: TurnEnvelope) -> Path | None:
+    required_outbox_path = _non_empty_str(turn.required_outbox_path)
+    return Path(required_outbox_path) if required_outbox_path else None
+
+
+def _transcript_path(worker: WorkerSpec | None) -> Path | None:
+    transcript_artifact = _non_empty_str(worker.transcript_artifact if worker else "")
+    if not transcript_artifact:
+        return None
+    return Path(transcript_artifact)
+
+
+def _filesystem_stream_state_path(
+    *,
+    outbox_path: Path | None,
+    transcript_path: Path | None,
+) -> Path:
+    if outbox_path is not None:
+        return outbox_path.with_name(f".{outbox_path.name}.v4-stream-state.json")
+    if transcript_path is not None:
+        return transcript_path.with_name(f".{transcript_path.name}.v4-stream-state.json")
+    raise ValueError("outbox_path or transcript_path is required")
+
+
+def _transcript_artifact_ref(worker: WorkerSpec | None, transcript_path: Path) -> str:
+    transcript_artifact = _non_empty_str(worker.transcript_artifact if worker else "")
+    if transcript_artifact and not Path(transcript_artifact).is_absolute():
+        return transcript_artifact
+    parts = transcript_path.parts
+    for index in range(len(parts) - 4):
+        if (
+            parts[index] == ".orchestrator"
+            and parts[index + 1] == "crews"
+            and worker is not None
+            and parts[index + 2] == worker.crew_id
+            and parts[index + 3] == "artifacts"
+        ):
+            return Path(*parts[index + 4 :]).as_posix()
+    return transcript_path.name

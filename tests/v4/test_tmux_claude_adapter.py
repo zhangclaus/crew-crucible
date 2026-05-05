@@ -328,6 +328,48 @@ def test_tmux_adapter_watch_turn_reads_outbox_when_observe_fails(tmp_path: Path)
     }
 
 
+def test_tmux_adapter_filesystem_stream_dedupes_outbox_between_polls(tmp_path: Path):
+    outbox_path = tmp_path / "workers" / "worker-1" / "outbox" / "turn-1.json"
+    outbox_path.parent.mkdir(parents=True)
+    outbox_path.write_text(
+        json.dumps(
+            {
+                "crew_id": "crew-1",
+                "worker_id": "worker-1",
+                "turn_id": "turn-1",
+                "status": "completed",
+                "summary": "implemented",
+            }
+        ),
+        encoding="utf-8",
+    )
+    native = FakeNativeSession()
+    native.observe_result = {
+        "snapshot": "",
+        "marker": "marker-1",
+        "marker_seen": False,
+        "transcript_artifact": "",
+    }
+    adapter = ClaudeCodeTmuxAdapter(native_session=native)
+    turn = TurnEnvelope(
+        crew_id="crew-1",
+        worker_id="worker-1",
+        turn_id="turn-1",
+        round_id="round-1",
+        phase="source",
+        message="Implement",
+        expected_marker="marker-1",
+        required_outbox_path=str(outbox_path),
+    )
+
+    first = list(adapter.watch_turn(turn))
+    adapter.commit_runtime_events(turn, first)
+    second = list(adapter.watch_turn(turn))
+
+    assert [event.type for event in first] == ["worker.outbox.detected"]
+    assert second == []
+
+
 def test_tmux_adapter_watch_turn_ignores_malformed_observation_values():
     native = FakeNativeSession()
     native.observe_result = {
@@ -376,3 +418,106 @@ def test_tmux_adapter_watch_turn_falls_back_when_marker_is_empty():
     assert [event.type for event in events] == ["marker.detected"]
     assert events[0].payload["marker"] == "marker-1"
     assert events[0].artifact_refs == []
+
+
+def test_tmux_adapter_tails_transcript_incrementally_and_persists_cursor(tmp_path: Path):
+    transcript = tmp_path / "transcript.txt"
+    transcript.write_text("old output\n", encoding="utf-8")
+    native = FakeNativeSession()
+    native.observe_exception = RuntimeError("capture-pane failed")
+    adapter = ClaudeCodeTmuxAdapter(native_session=native)
+    adapter.register_worker(
+        WorkerSpec(
+            crew_id="crew-1",
+            worker_id="worker-1",
+            runtime_type="tmux_claude",
+            contract_id="contract-1",
+            terminal_pane="pane-1",
+            transcript_artifact=str(transcript),
+        )
+    )
+    turn = TurnEnvelope(
+        crew_id="crew-1",
+        worker_id="worker-1",
+        turn_id="turn-1",
+        round_id="round-1",
+        phase="source",
+        message="Implement",
+        expected_marker="marker-1",
+    )
+    adapter.deliver_turn(turn)
+    transcript.write_text("old output\nnew output\nmarker-1\n", encoding="utf-8")
+
+    first_events = list(adapter.watch_turn(turn))
+    adapter.commit_runtime_events(turn, first_events)
+    second_adapter = ClaudeCodeTmuxAdapter(native_session=native)
+    second_adapter.register_worker(
+        WorkerSpec(
+            crew_id="crew-1",
+            worker_id="worker-1",
+            runtime_type="tmux_claude",
+            contract_id="contract-1",
+            terminal_pane="pane-1",
+            transcript_artifact=str(transcript),
+        )
+    )
+    second_events = list(second_adapter.watch_turn(turn))
+
+    assert [event.type for event in first_events] == [
+        "runtime.output.appended",
+        "marker.detected",
+        "runtime.observe_failed",
+    ]
+    assert first_events[0].payload["text"] == "new output\nmarker-1\n"
+    assert not [event for event in second_events if event.type == "runtime.output.appended"]
+
+
+class TranscriptWritingNativeSession(FakeNativeSession):
+    def __init__(self, transcript_path: Path):
+        super().__init__()
+        self.transcript_path = transcript_path
+        self.observe_exception = RuntimeError("capture-pane failed")
+
+    def send(self, **kwargs):
+        result = super().send(**kwargs)
+        self.transcript_path.write_text(
+            self.transcript_path.read_text(encoding="utf-8") + "during send\nmarker-1\n",
+            encoding="utf-8",
+        )
+        return result
+
+
+def test_tmux_adapter_initializes_transcript_cursor_before_send(tmp_path: Path):
+    transcript = tmp_path / "transcript.txt"
+    transcript.write_text("before turn\n", encoding="utf-8")
+    native = TranscriptWritingNativeSession(transcript)
+    adapter = ClaudeCodeTmuxAdapter(native_session=native)
+    adapter.register_worker(
+        WorkerSpec(
+            crew_id="crew-1",
+            worker_id="worker-1",
+            runtime_type="tmux_claude",
+            contract_id="contract-1",
+            terminal_pane="pane-1",
+            transcript_artifact=str(transcript),
+        )
+    )
+    turn = TurnEnvelope(
+        crew_id="crew-1",
+        worker_id="worker-1",
+        turn_id="turn-1",
+        round_id="round-1",
+        phase="source",
+        message="Implement",
+        expected_marker="marker-1",
+    )
+
+    adapter.deliver_turn(turn)
+    events = list(adapter.watch_turn(turn))
+
+    assert [event.type for event in events] == [
+        "runtime.output.appended",
+        "marker.detected",
+        "runtime.observe_failed",
+    ]
+    assert events[0].payload["text"] == "during send\nmarker-1\n"

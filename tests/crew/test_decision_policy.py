@@ -141,6 +141,32 @@ def test_decision_policy_spawns_browser_tester_for_ui_goal_after_patch_review():
     assert action.contract.authority_level == AuthorityLevel.READONLY
 
 
+def test_decision_policy_spawns_browser_tester_for_frontend_repo_risk_after_patch_review():
+    action = CrewDecisionPolicy().decide(
+        {
+            "crew_id": "crew-1",
+            "goal": "Adjust checkout behavior",
+            "workers": [
+                {
+                    "worker_id": "worker-source",
+                    "status": "running",
+                    "capabilities": ["inspect_code", "edit_source", "edit_tests", "run_verification"],
+                    "authority_level": "source_write",
+                }
+            ],
+            "changed_files": ["apps/web/src/Checkout.tsx"],
+            "review_status": "ok",
+            "browser_check_status": None,
+            "verification_failures": [],
+            "repo_risk_tags": ["frontend"],
+        }
+    )
+
+    assert action.action_type == DecisionActionType.SPAWN_WORKER
+    assert action.contract is not None
+    assert action.contract.label == "browser-flow-tester"
+
+
 def test_decision_policy_spawns_guardrail_maintainer_after_three_failures_when_failure_analyst_exists():
     action = CrewDecisionPolicy().decide(
         {

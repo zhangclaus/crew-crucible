@@ -53,3 +53,6 @@ class EventStore(Protocol):
 
     def get_by_idempotency_key(self, idempotency_key: str) -> AgentEvent | None:
         ...
+
+    def health(self) -> dict[str, Any]:
+        ...

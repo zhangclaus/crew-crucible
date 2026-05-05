@@ -13,6 +13,28 @@ from uuid import uuid4
 from codex_claude_orchestrator.v4.events import AgentEvent, normalize
 
 
+SQLITE_EXPECTED_SCHEMA_VERSION = 2
+SQLITE_SCHEMA_MIGRATIONS = [
+    {"version": 1, "checksum": "sqlite_events_v1"},
+    {"version": 2, "checksum": "sqlite_events_round_contract_v2"},
+]
+SQLITE_REQUIRED_COLUMNS = [
+    "event_id",
+    "stream_id",
+    "sequence",
+    "type",
+    "crew_id",
+    "worker_id",
+    "turn_id",
+    "round_id",
+    "contract_id",
+    "idempotency_key",
+    "payload_json",
+    "artifact_refs_json",
+    "created_at",
+]
+
+
 class SQLiteEventStore:
     def __init__(
         self,
@@ -176,8 +198,62 @@ class SQLiteEventStore:
                     return None
                 raise
 
+    def health(self) -> dict[str, Any]:
+        try:
+            with self._connection() as conn:
+                table_names = {
+                    row["name"]
+                    for row in conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type = 'table'"
+                    ).fetchall()
+                }
+                initialized = "events" in table_names
+                columns = _sqlite_columns(conn, "events") if initialized else []
+                missing_columns = [
+                    column for column in SQLITE_REQUIRED_COLUMNS if column not in columns
+                ]
+                migrations = _sqlite_migrations(conn) if "event_store_schema_migrations" in table_names else []
+                latest_schema_version = max(
+                    (migration["version"] for migration in migrations),
+                    default=0,
+                )
+        except Exception as exc:
+            return {
+                "backend": "sqlite",
+                "ok": False,
+                "readonly": self._readonly,
+                "initialized": False,
+                "expected_schema_version": SQLITE_EXPECTED_SCHEMA_VERSION,
+                "latest_schema_version": 0,
+                "applied_migrations": [],
+                "missing_columns": SQLITE_REQUIRED_COLUMNS,
+                "error": str(exc),
+            }
+        return {
+            "backend": "sqlite",
+            "ok": initialized
+            and latest_schema_version >= SQLITE_EXPECTED_SCHEMA_VERSION
+            and not missing_columns,
+            "readonly": self._readonly,
+            "initialized": initialized,
+            "expected_schema_version": SQLITE_EXPECTED_SCHEMA_VERSION,
+            "latest_schema_version": latest_schema_version,
+            "applied_migrations": migrations,
+            "missing_columns": missing_columns,
+            "path": str(self.path),
+        }
+
     def _init_db(self) -> None:
         with self._connection() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS event_store_schema_migrations (
+                    version INTEGER PRIMARY KEY,
+                    checksum TEXT NOT NULL,
+                    applied_at TEXT NOT NULL
+                )
+                """
+            )
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS events (
@@ -231,6 +307,19 @@ class SQLiteEventStore:
                 ON events (contract_id)
                 """
             )
+            for migration in SQLITE_SCHEMA_MIGRATIONS:
+                conn.execute(
+                    """
+                    INSERT INTO event_store_schema_migrations (version, checksum, applied_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT (version) DO NOTHING
+                    """,
+                    (
+                        migration["version"],
+                        migration["checksum"],
+                        datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                    ),
+                )
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
@@ -347,3 +436,18 @@ class SQLiteEventStore:
             artifact_refs=json.loads(row["artifact_refs_json"]),
             created_at=row["created_at"],
         )
+
+
+def _sqlite_columns(conn: sqlite3.Connection, table_name: str) -> list[str]:
+    return [row["name"] for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()]
+
+
+def _sqlite_migrations(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT version, checksum
+        FROM event_store_schema_migrations
+        ORDER BY version ASC
+        """
+    ).fetchall()
+    return [{"version": int(row["version"]), "checksum": str(row["checksum"])} for row in rows]

@@ -78,6 +78,19 @@ def test_postgres_store_requires_password_before_connect(monkeypatch: pytest.Mon
         store.initialize()
 
 
+def test_postgres_store_health_reports_configuration_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("PG_PASSWORD", raising=False)
+    store = PostgresEventStore(PostgresEventStoreConfig.from_env())
+
+    health = store.health()
+
+    assert health["backend"] == "postgres"
+    assert health["ok"] is False
+    assert health["expected_schema_version"] == 2
+    assert health["latest_schema_version"] == 0
+    assert "PG_PASSWORD" in health["error"]
+
+
 def test_postgres_config_rejects_invalid_port(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PG_PORT", "not-a-port")
 

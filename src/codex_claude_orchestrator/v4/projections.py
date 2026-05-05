@@ -24,6 +24,30 @@ class CrewProjection:
     turns: dict[str, TurnProjection] = field(default_factory=dict)
     learning: LearningProjection = field(default_factory=LearningProjection)
 
+    def to_dict(self) -> dict:
+        return {
+            "crew_id": self.crew_id,
+            "goal": self.goal,
+            "status": self.status,
+            "turns": {
+                turn_id: {
+                    "turn_id": turn.turn_id,
+                    "worker_id": turn.worker_id,
+                    "status": turn.status,
+                    "last_event_type": turn.last_event_type,
+                }
+                for turn_id, turn in self.turns.items()
+            },
+            "learning": {
+                "open_challenge_ids": self.learning.open_challenge_ids,
+                "has_blocking_challenge": self.learning.has_blocking_challenge,
+                "candidate_states": self.learning.candidate_states,
+                "active_skill_refs": self.learning.active_skill_refs,
+                "active_guardrail_refs": self.learning.active_guardrail_refs,
+                "worker_quality_scores": self.learning.worker_quality_scores,
+            },
+        }
+
     @classmethod
     def from_events(cls, events: list[AgentEvent]) -> "CrewProjection":
         projection = cls(learning=LearningProjection.from_events(events))

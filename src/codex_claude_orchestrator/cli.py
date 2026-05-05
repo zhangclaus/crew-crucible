@@ -39,6 +39,7 @@ from codex_claude_orchestrator.v4.crew_runner import V4CrewRunner
 from codex_claude_orchestrator.v4.event_store_factory import build_v4_event_store
 from codex_claude_orchestrator.v4.merge_transaction import V4MergeTransaction
 from codex_claude_orchestrator.v4.message_ack import MessageAckProcessor
+from codex_claude_orchestrator.v4.projections import CrewProjection
 from codex_claude_orchestrator.v4.supervisor import V4Supervisor
 from codex_claude_orchestrator.v4.turn_context import TurnContextBuilder
 from codex_claude_orchestrator.verification.runner import VerificationRunner
@@ -199,6 +200,8 @@ def build_parser() -> argparse.ArgumentParser:
     crew_events = crew_subparsers.add_parser("events", help="List V4 crew events")
     crew_events.add_argument("--repo", required=True)
     crew_events.add_argument("--crew", required=True)
+    crew_event_store_health = crew_subparsers.add_parser("event-store-health", help="Show V4 event-store health")
+    crew_event_store_health.add_argument("--repo", required=True)
     crew_inbox = crew_subparsers.add_parser("inbox", help="Read a worker inbox")
     crew_inbox.add_argument("--repo", required=True)
     crew_inbox.add_argument("--crew", required=False)
@@ -827,6 +830,12 @@ def handle_crew_command(args) -> int:
         event_store = build_v4_event_store(repo_root, readonly=True)
         print(json.dumps([event.to_dict() for event in event_store.list_stream(args.crew)], ensure_ascii=False))
         return 0
+    if args.crew_command == "event-store-health":
+        if not repo_root.exists():
+            raise ValueError(f"repo does not exist: {repo_root}")
+        event_store = build_v4_event_store(repo_root, readonly=True)
+        print(json.dumps(event_store.health(), ensure_ascii=False))
+        return 0
 
     controller = build_crew_controller(repo_root)
     recorder = CrewRecorder(repo_root / ".orchestrator")
@@ -910,6 +919,25 @@ def handle_crew_command(args) -> int:
         raise ValueError("no crew id provided and no latest crew exists")
 
     if args.crew_command == "status":
+        event_store = build_v4_event_store(repo_root, readonly=True)
+        v4_events = event_store.list_stream(crew_id)
+        if v4_events:
+            projection = CrewProjection.from_events(v4_events)
+            print(
+                json.dumps(
+                    {
+                        "runtime": "v4",
+                        "crew": {
+                            "crew_id": projection.crew_id,
+                            "root_goal": projection.goal,
+                            "status": projection.status,
+                        },
+                        "projection": projection.to_dict(),
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            return 0
         print(json.dumps(controller.status(repo_root=repo_root, crew_id=crew_id), ensure_ascii=False))
         return 0
     if args.crew_command == "blackboard":

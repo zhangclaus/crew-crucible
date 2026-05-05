@@ -58,6 +58,13 @@ class V4Paths:
             / f"{_safe_id(turn_id, 'turn_id')}.json"
         )
 
+    def result_path(self, worker_id: str, turn_id: str) -> Path:
+        return (
+            self.worker_root(worker_id)
+            / "results"
+            / f"{_safe_id(turn_id, 'turn_id')}.json"
+        )
+
     def merge_path(self, name: str) -> Path:
         return self.artifact_root / "merge" / f"{_safe_id(name, 'name')}.json"
 

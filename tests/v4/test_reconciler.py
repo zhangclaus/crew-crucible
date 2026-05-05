@@ -1,7 +1,15 @@
 from pathlib import Path
+from typing import get_type_hints
 
 from codex_claude_orchestrator.v4.event_store import SQLiteEventStore
+from codex_claude_orchestrator.v4.event_store_protocol import EventStore
 from codex_claude_orchestrator.v4.reconciler import Reconciler
+
+
+def test_reconciler_depends_on_event_store_protocol():
+    annotation = get_type_hints(Reconciler.__init__)["event_store"]
+
+    assert annotation is EventStore
 
 
 def test_reconciler_marks_delivered_turn_without_completion_as_inconclusive(tmp_path: Path):

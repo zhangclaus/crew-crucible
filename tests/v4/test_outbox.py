@@ -32,6 +32,31 @@ def test_outbox_result_parses_acknowledged_message_ids() -> None:
     assert result.next_suggested_action == "review"
 
 
+def test_outbox_result_parses_typed_review_verdict() -> None:
+    result = WorkerOutboxResult.from_dict(
+        {
+            "crew_id": "crew-1",
+            "worker_id": "worker-review",
+            "turn_id": "turn-review",
+            "status": "completed",
+            "review": {
+                "verdict": "block",
+                "summary": "missing regression test",
+                "findings": ["add a failing test first"],
+                "evidence_refs": ["workers/worker-review/outbox/turn-review.json"],
+            },
+        }
+    )
+
+    assert result.is_valid
+    assert result.review == {
+        "verdict": "block",
+        "summary": "missing regression test",
+        "findings": ["add a failing test first"],
+        "evidence_refs": ["workers/worker-review/outbox/turn-review.json"],
+    }
+
+
 def test_outbox_result_reports_validation_errors_without_crashing() -> None:
     result = WorkerOutboxResult.from_dict(
         {

@@ -134,6 +134,7 @@ class V4Supervisor:
             if self._is_current_turn_event(turn, runtime_event)
         ]
         for index, runtime_event in enumerate(runtime_events):
+            event_payload = _runtime_event_payload_for_storage(runtime_event)
             event = self._events.append(
                 stream_id=crew_id,
                 type=runtime_event.type,
@@ -146,10 +147,11 @@ class V4Supervisor:
                     f"{crew_id}/{turn.turn_id}/{runtime_event.type}/{index}/"
                     f"{_runtime_event_digest(runtime_event, index=index)}"
                 ),
-                payload=runtime_event.payload,
+                payload=event_payload,
                 artifact_refs=runtime_event.artifact_refs,
             )
             self._process_message_ack_if_configured(event)
+        self._commit_runtime_events_if_supported(turn, runtime_events)
 
         terminal_result = self._terminal_result(crew_id=crew_id, turn=turn)
         if terminal_result is not None:
@@ -255,12 +257,34 @@ class V4Supervisor:
         if self._message_ack_processor is not None:
             self._message_ack_processor.process(event)
 
+    def _commit_runtime_events_if_supported(
+        self,
+        turn: TurnEnvelope,
+        runtime_events: list[RuntimeEvent],
+    ) -> None:
+        commit = getattr(self._adapter, "commit_runtime_events", None)
+        if callable(commit):
+            try:
+                commit(turn, runtime_events)
+            except Exception as exc:
+                self._events.append(
+                    stream_id=turn.crew_id,
+                    type="runtime.stream_commit_failed",
+                    crew_id=turn.crew_id,
+                    worker_id=turn.worker_id,
+                    turn_id=turn.turn_id,
+                    round_id=turn.round_id,
+                    contract_id=turn.contract_id,
+                    idempotency_key=f"{turn.crew_id}/{turn.turn_id}/runtime.stream_commit_failed",
+                    payload={"error": str(exc)},
+                )
+
 
 def _runtime_event_digest(event: RuntimeEvent, *, index: int) -> str:
     content: dict[str, Any] = {
         "index": index,
         "type": event.type,
-        "payload": event.payload,
+        "payload": _runtime_event_payload_for_storage(event),
         "artifact_refs": event.artifact_refs,
     }
     encoded = json.dumps(
@@ -269,6 +293,14 @@ def _runtime_event_digest(event: RuntimeEvent, *, index: int) -> str:
         separators=(",", ":"),
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _runtime_event_payload_for_storage(event: RuntimeEvent) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in event.payload.items()
+        if key != "_stream_state"
+    }
 
 
 def _infer_repo_root_from_artifact_root(artifact_root: Path, *, crew_id: str) -> Path:

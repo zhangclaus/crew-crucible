@@ -7,12 +7,12 @@ from typing import Any
 from codex_claude_orchestrator.crew.gates import GateResult
 from codex_claude_orchestrator.crew.readiness import ReadinessReport
 from codex_claude_orchestrator.crew.review_verdict import ReviewVerdict
+from codex_claude_orchestrator.v4.event_store_protocol import EventStore
 from codex_claude_orchestrator.v4.events import AgentEvent, normalize
-from codex_claude_orchestrator.v4.event_store import SQLiteEventStore
 
 
 class GateEventBuilder:
-    def __init__(self, event_store: SQLiteEventStore | None = None) -> None:
+    def __init__(self, event_store: EventStore | None = None) -> None:
         self.event_store = event_store
 
     def scope_evaluated(self, *, crew_id: str, round_id: str, worker_id: str, result: GateResult) -> AgentEvent:

@@ -37,6 +37,15 @@ class FakeAdapter:
         return iter(events)
 
 
+class CommitRecordingAdapter(FakeAdapter):
+    def __init__(self, events=None, delivery_result=None):
+        super().__init__(events=events, delivery_result=delivery_result)
+        self.committed = []
+
+    def commit_runtime_events(self, turn: TurnEnvelope, events: list[RuntimeEvent]) -> None:
+        self.committed.append((turn.turn_id, list(events)))
+
+
 def completed_outbox_event(turn: TurnEnvelope) -> RuntimeEvent:
     return RuntimeEvent(
         type="worker.outbox.detected",
@@ -132,6 +141,51 @@ def test_v4_supervisor_runs_until_turn_completed(tmp_path: Path):
         "worker.outbox.detected",
         "turn.completed",
     ]
+
+
+def test_v4_supervisor_commits_runtime_stream_state_after_event_append(tmp_path: Path):
+    store = SQLiteEventStore(tmp_path / "events.sqlite3")
+
+    def events_for_turn(turn: TurnEnvelope):
+        return [
+            RuntimeEvent(
+                type="worker.outbox.detected",
+                turn_id=turn.turn_id,
+                worker_id=turn.worker_id,
+                payload={
+                    "valid": True,
+                    "status": "completed",
+                    "_stream_state": {
+                        "kind": "outbox",
+                        "key": "turn-1:/tmp/outbox.json",
+                        "sha256": "abc",
+                    },
+                },
+            )
+        ]
+
+    adapter = CommitRecordingAdapter(events_for_turn)
+    supervisor = V4Supervisor(
+        event_store=store,
+        artifact_store=ArtifactStore(tmp_path / "artifacts"),
+        adapter=adapter,
+    )
+
+    result = supervisor.run_source_turn(
+        crew_id="crew-1",
+        goal="Fix tests",
+        worker_id="worker-1",
+        round_id="round-1",
+        message="Implement",
+        expected_marker="marker-1",
+    )
+
+    outbox_event = [
+        event for event in store.list_stream("crew-1") if event.type == "worker.outbox.detected"
+    ][0]
+    assert result["status"] == "turn_completed"
+    assert adapter.committed[0][0] == "round-1-worker-1-source"
+    assert "_stream_state" not in outbox_event.payload
 
 
 def test_v4_supervisor_invokes_adversarial_evaluator_after_turn_completed(tmp_path: Path):

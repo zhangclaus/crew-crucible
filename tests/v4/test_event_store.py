@@ -150,6 +150,53 @@ def test_sqlite_event_store_round_and_contract_fields(tmp_path: Path) -> None:
     assert loaded.contract_id == "contract-1"
 
 
+def test_sqlite_event_store_health_reports_schema_version(tmp_path: Path) -> None:
+    store = SQLiteEventStore(tmp_path / "events.db")
+
+    health = store.health()
+
+    assert health["backend"] == "sqlite"
+    assert health["ok"] is True
+    assert health["initialized"] is True
+    assert health["expected_schema_version"] == 2
+    assert health["latest_schema_version"] == 2
+    assert health["applied_migrations"] == [
+        {"version": 1, "checksum": "sqlite_events_v1"},
+        {"version": 2, "checksum": "sqlite_events_round_contract_v2"},
+    ]
+    assert health["missing_columns"] == []
+
+
+def test_sqlite_event_store_health_detects_old_schema(tmp_path: Path) -> None:
+    store_path = tmp_path / "events.db"
+    with sqlite3.connect(store_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE events (
+                event_id TEXT PRIMARY KEY,
+                stream_id TEXT NOT NULL,
+                sequence INTEGER NOT NULL,
+                type TEXT NOT NULL,
+                crew_id TEXT NOT NULL DEFAULT '',
+                worker_id TEXT NOT NULL DEFAULT '',
+                turn_id TEXT NOT NULL DEFAULT '',
+                idempotency_key TEXT NOT NULL DEFAULT '',
+                payload_json TEXT NOT NULL,
+                artifact_refs_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE (stream_id, sequence)
+            )
+            """
+        )
+
+    health = SQLiteEventStore.open_existing(store_path).health()
+
+    assert health["ok"] is False
+    assert health["initialized"] is True
+    assert health["latest_schema_version"] == 0
+    assert health["missing_columns"] == ["round_id", "contract_id"]
+
+
 def test_sqlite_event_store_append_claim_reports_whether_event_was_inserted(
     tmp_path: Path,
 ) -> None:

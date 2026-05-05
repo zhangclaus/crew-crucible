@@ -16,6 +16,7 @@ class WorkerOutboxResult:
     changed_files: list[str] = field(default_factory=list)
     artifact_refs: list[str] = field(default_factory=list)
     verification: list[Any] = field(default_factory=list)
+    review: dict[str, Any] = field(default_factory=dict)
     acknowledged_message_ids: list[str] = field(default_factory=list)
     messages: list[Any] = field(default_factory=list)
     risks: list[str] = field(default_factory=list)
@@ -57,6 +58,7 @@ class WorkerOutboxResult:
             for field_name in cls.STRING_LIST_FIELDS
         }
         lists = {field_name: _list(payload, field_name, errors) for field_name in cls.LIST_FIELDS}
+        review = _dict(payload, "review", errors)
         summary = payload.get("summary", "")
         if not isinstance(summary, str):
             summary = ""
@@ -73,6 +75,7 @@ class WorkerOutboxResult:
             changed_files=string_lists["changed_files"],
             artifact_refs=string_lists["artifact_refs"],
             verification=lists["verification"],
+            review=review,
             acknowledged_message_ids=string_lists["acknowledged_message_ids"],
             messages=lists["messages"],
             risks=string_lists["risks"],
@@ -102,4 +105,12 @@ def _list(payload: dict[str, Any], field_name: str, errors: list[str]) -> list[A
     if not isinstance(value, list):
         errors.append(f"{field_name} must be a list")
         return []
+    return value
+
+
+def _dict(payload: dict[str, Any], field_name: str, errors: list[str]) -> dict[str, Any]:
+    value = payload.get(field_name, {})
+    if not isinstance(value, dict):
+        errors.append(f"{field_name} must be a dict")
+        return {}
     return value

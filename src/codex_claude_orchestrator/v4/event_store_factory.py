@@ -38,6 +38,18 @@ class EmptyEventStore:
     def get_by_idempotency_key(self, idempotency_key: str) -> AgentEvent | None:
         return None
 
+    def health(self) -> dict[str, Any]:
+        return {
+            "backend": "empty",
+            "ok": False,
+            "initialized": False,
+            "expected_schema_version": 0,
+            "latest_schema_version": 0,
+            "applied_migrations": [],
+            "missing_columns": [],
+            "error": "no V4 event store backend is available",
+        }
+
 
 def build_v4_event_store(
     repo_root: Path,

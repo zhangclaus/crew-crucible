@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from codex_claude_orchestrator.v4.event_store import SQLiteEventStore
+from codex_claude_orchestrator.v4.event_store_protocol import EventStore
 from codex_claude_orchestrator.v4.events import AgentEvent
 
 
@@ -8,7 +8,7 @@ TERMINAL_TURN_EVENTS = {"turn.completed", "turn.failed", "turn.timeout", "turn.c
 
 
 class Reconciler:
-    def __init__(self, *, event_store: SQLiteEventStore):
+    def __init__(self, *, event_store: EventStore):
         self._events = event_store
 
     def reconcile_turn(self, crew_id: str, turn_id: str) -> AgentEvent | None:

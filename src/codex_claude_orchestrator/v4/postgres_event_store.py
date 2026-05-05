@@ -17,6 +17,23 @@ DEFAULT_PG_HOST = "124.222.58.173"
 DEFAULT_PG_DB = "ragbase"
 DEFAULT_PG_USER = "ragbase"
 DEFAULT_PG_PORT = 5432
+POSTGRES_EXPECTED_SCHEMA_VERSION = 2
+POSTGRES_REQUIRED_COLUMNS = [
+    "position",
+    "event_id",
+    "stream_id",
+    "sequence",
+    "type",
+    "crew_id",
+    "worker_id",
+    "turn_id",
+    "round_id",
+    "contract_id",
+    "idempotency_key",
+    "payload_jsonb",
+    "artifact_refs_jsonb",
+    "created_at",
+]
 
 
 class PostgresConfigurationError(RuntimeError):
@@ -245,6 +262,64 @@ class PostgresEventStore:
                 event = self._get_by_idempotency_key(cursor, idempotency_key)
             conn.commit()
         return event
+
+    def health(self) -> dict[str, Any]:
+        try:
+            self.config.require_password()
+            self.config.connect_kwargs()
+            with self._connect() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT version, checksum
+                        FROM event_store_schema_migrations
+                        ORDER BY version ASC
+                        """
+                    )
+                    migrations = [
+                        {"version": int(row["version"]), "checksum": str(row["checksum"])}
+                        for row in cursor.fetchall()
+                    ]
+                    cursor.execute(
+                        """
+                        SELECT column_name
+                        FROM information_schema.columns
+                        WHERE table_name = 'agent_events'
+                        """
+                    )
+                    columns = {str(row["column_name"]) for row in cursor.fetchall()}
+                conn.commit()
+            latest_schema_version = max(
+                (migration["version"] for migration in migrations),
+                default=0,
+            )
+            missing_columns = [
+                column for column in POSTGRES_REQUIRED_COLUMNS if column not in columns
+            ]
+            return {
+                "backend": "postgres",
+                "ok": latest_schema_version >= POSTGRES_EXPECTED_SCHEMA_VERSION and not missing_columns,
+                "initialized": bool(columns),
+                "expected_schema_version": POSTGRES_EXPECTED_SCHEMA_VERSION,
+                "latest_schema_version": latest_schema_version,
+                "applied_migrations": migrations,
+                "missing_columns": missing_columns,
+                "host": self.config.host,
+                "database": self.config.database,
+            }
+        except Exception as exc:
+            return {
+                "backend": "postgres",
+                "ok": False,
+                "initialized": False,
+                "expected_schema_version": POSTGRES_EXPECTED_SCHEMA_VERSION,
+                "latest_schema_version": 0,
+                "applied_migrations": [],
+                "missing_columns": POSTGRES_REQUIRED_COLUMNS,
+                "host": self.config.host,
+                "database": self.config.database,
+                "error": str(exc),
+            }
 
     def _connect(self):
         self.config.require_password()

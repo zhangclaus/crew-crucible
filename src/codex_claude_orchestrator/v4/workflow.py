@@ -53,6 +53,7 @@ class V4WorkflowEngine:
             stream_id=crew_id,
             type="crew.ready_for_accept",
             crew_id=crew_id,
+            round_id=round_id,
             idempotency_key=f"{crew_id}/{round_id}/ready/{digest}",
             payload=payload,
             artifact_refs=artifact_refs,

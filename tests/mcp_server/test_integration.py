@@ -39,15 +39,13 @@ def test_server_registers_all_tool_modules():
     assert "crew_diff" in registered_names
 
     # Decision tools
-    assert "crew_decide" in registered_names
     assert "crew_accept" in registered_names
     assert "crew_challenge" in registered_names
-    assert "crew_spawn" in registered_names
+    assert "crew_decide" not in registered_names
+    assert "crew_spawn" not in registered_names
 
     # Execution tools
     assert "crew_run" in registered_names
-    assert "crew_verify" in registered_names
-    assert "crew_merge_plan" in registered_names
 
 
 def test_server_no_tools_when_no_controller():

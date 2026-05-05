@@ -81,6 +81,39 @@ def test_outbox_watcher_preserves_verification_evidence(tmp_path: Path) -> None:
     ]
 
 
+def test_outbox_watcher_preserves_typed_review_verdict(tmp_path: Path) -> None:
+    outbox = tmp_path / "turn-review.json"
+    outbox.write_text(
+        json.dumps(
+            {
+                "crew_id": "crew-1",
+                "worker_id": "worker-review",
+                "turn_id": "turn-review",
+                "status": "completed",
+                "review": {
+                    "verdict": "warn",
+                    "summary": "small risk remains",
+                    "findings": ["manual edge case not covered"],
+                    "evidence_refs": ["review.json"],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    events = list(
+        OutboxWatcher().watch(
+            crew_id="crew-1",
+            turn_id="turn-review",
+            worker_id="worker-review",
+            outbox_path=outbox,
+            artifact_ref="workers/worker-review/outbox/turn-review.json",
+        )
+    )
+
+    assert events[0].payload["review"]["verdict"] == "warn"
+
+
 def test_outbox_watcher_rejects_mismatched_identity(tmp_path: Path) -> None:
     outbox = tmp_path / "turn-1.json"
     outbox.write_text(

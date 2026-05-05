@@ -1,25 +1,38 @@
-# Codex-Managed Claude Crew V3 Implementation Plan
+# Codex-Managed Claude Crew V3 MVP Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 在现有 V2 Claude Bridge/Session 之上实现 V3：由 Codex 管理多个 Claude worker 的本地 crew 编排层。
+**Goal:** 实现 V3 MVP：Codex 可以管理多个可持续的原生 Claude Code CLI worker，并通过 git worktree、blackboard、worker send/observe/attach/tail/status、verification、changed files 和轻量 merge plan 完成可审计协作。
 
-**Architecture:** 新增 crew 级数据模型、持久化记录、blackboard、task graph、worker pool、crew controller、merge arbiter 和 CLI/UI 接口。V3 不替换 V1/V2，而是通过 `WorkerPool` 组合多个现有 `ClaudeBridge` 会话，并让 Codex 继续拥有验证、挑战、验收和合并裁决权。
+**Architecture:** V3 MVP 不替换 V1/V2，而是在原生 `claude` CLI 终端会话之上新增 crew 级控制层。第一版只做 star topology：Codex/CrewController 是唯一调度者，Claude workers 不直接互相通信，worker 产出统一写入 `.orchestrator/crews/<crew_id>/`；`ClaudeBridge` 保留为批处理/兼容后备，不作为 V3 主 worker runtime。
 
-**Tech Stack:** Python 3.11+, stdlib (`argparse`, `dataclasses`, `enum`, `json`, `pathlib`, `subprocess`, `uuid`), pytest, existing Claude Code CLI bridge
+**Tech Stack:** Python 3.11+, stdlib (`argparse`, `dataclasses`, `enum`, `json`, `pathlib`, `subprocess`, `uuid`), pytest, git worktree, tmux-backed native Claude Code CLI sessions, existing `VerificationRunner`/`PolicyGate`
 
 ---
 
 ## Scope Check
 
-V3 spec 是一个完整但可分层的子系统：crew 记录、worker 调度、黑板、任务图、验证、合并建议和 UI 展示。它不需要重新拆 spec，但实现必须分阶段提交，避免一次性改穿 V1/V2。
+本计划收敛到 V3 MVP，避免把成熟版能力提前塞进第一版。
 
-本计划采用保守 MVP：
+MVP 包含：
 
-- 第一版 implementer 使用现有 `WorkspaceMode.ISOLATED` 作为写入隔离，不直接改用户主工作区。
-- `worktree` 作为明确扩展点保留在模型和 merge plan 中，不在第一批任务里强行实现真实 `git worktree`。
-- worker 之间不直接通信，只通过 `BlackboardStore` 和 Codex/CrewController 交互。
-- 所有新增能力必须保留现有 `dispatch`、`session`、`claude bridge`、`ui` 测试。
+- `explorer`、`implementer`、`reviewer` 三类 worker。
+- 每个 worker 是一个独立、可 attach、可观察的原生 Claude Code CLI session。
+- `crew worker send/observe/attach/tail/status` 可以继续和指定 worker 交互。
+- `BlackboardStore` 记录 Codex 决策、worker 输出摘要、验证结果、风险和 change evidence。
+- implementer 默认使用 `WorkspaceMode.WORKTREE`，在独立 git worktree 和 worker branch 中写代码。
+- 写入 worker 创建前默认要求主 repo clean；`--allow-dirty-base` 才会保存 dirty base patch 并尝试应用到 worker worktree。
+- `WorkerChangeRecorder` 基于 worker branch diff 记录 changed files。
+- `MergeArbiter` 只生成只读 merge plan，不应用 patch。
+
+MVP 明确不包含：
+
+- `competitor` worker。
+- 独立 `verifier` worker。
+- 动态 `worker add/stop`。
+- GUI UI 改造。
+- 自动 merge 或 patch apply。
+- copy-based fallback 只用于 non-git repo 或测试 fake，不作为默认 worker runtime。
 
 ## Execution Preconditions
 
@@ -29,9 +42,9 @@ V3 spec 是一个完整但可分层的子系统：crew 记录、worker 调度、
 .venv/bin/python -m pytest -q
 ```
 
-Expected: 当前测试全部通过。如果失败，先记录失败项并判断是否和 V3 无关；不要在 V3 任务里顺手重构无关问题。
+Expected: 当前测试通过。如果失败，先确认失败是否与 V3 无关；不要在 V3 任务里顺手重构无关模块。
 
-每个任务完成后至少运行该任务列出的定向测试。任务 10 再运行完整回归：
+每个任务完成后运行该任务的定向测试。最后运行完整回归：
 
 ```bash
 .venv/bin/python -m pytest -q
@@ -41,37 +54,46 @@ Expected: 当前测试全部通过。如果失败，先记录失败项并判断�
 
 新增文件：
 
-- `src/codex_claude_orchestrator/crew_models.py`：V3 专用 enum/dataclass，避免继续撑大 `models.py`。
+- `src/codex_claude_orchestrator/crew_models.py`：V3 MVP enum/dataclass。
 - `src/codex_claude_orchestrator/crew_recorder.py`：`.orchestrator/crews/<crew_id>/` 持久化。
-- `src/codex_claude_orchestrator/blackboard.py`：append-only blackboard 的追加、读取、过滤接口。
-- `src/codex_claude_orchestrator/task_graph.py`：默认 crew task graph 生成和状态转换。
-- `src/codex_claude_orchestrator/worker_pool.py`：基于 `ClaudeBridge` 管理多个 role-specific worker。
-- `src/codex_claude_orchestrator/crew_controller.py`：V3 编排入口，连接 recorder、task graph、worker pool、blackboard、verification、merge arbiter。
-- `src/codex_claude_orchestrator/crew_verification.py`：crew 级命令验证，逻辑复用 `VerificationRunner` 的 policy/command/artifact 规则。
-- `src/codex_claude_orchestrator/merge_arbiter.py`：写入范围冲突检测和 merge plan 生成。
+- `src/codex_claude_orchestrator/blackboard.py`：append-only blackboard 读写过滤。
+- `src/codex_claude_orchestrator/task_graph.py`：默认三角色 task graph。
+- `src/codex_claude_orchestrator/worktree_manager.py`：git worktree 创建、dirty base 检查、branch diff changed-files。
+- `src/codex_claude_orchestrator/native_claude_session.py`：tmux/PTY 原生 Claude Code CLI session start/send/observe/attach/tail/status。
+- `src/codex_claude_orchestrator/worker_pool.py`：worker start/send/observe/attach/tail/status。
+- `src/codex_claude_orchestrator/crew_controller.py`：crew start、worker 操作、verify、challenge、accept、changes、merge-plan。
+- `src/codex_claude_orchestrator/crew_verification.py`：crew 级命令验证和 artifact 记录。
+- `src/codex_claude_orchestrator/worker_change_recorder.py`：基于 worktree branch diff 或 fallback snapshot 记录 worker changed files。
+- `src/codex_claude_orchestrator/merge_arbiter.py`：基于 recorded changes 生成只读 merge plan。
+
+修改文件：
+
+- `src/codex_claude_orchestrator/models.py`：增加 `WorkspaceMode.WORKTREE` 和 worktree allocation metadata。
+- `src/codex_claude_orchestrator/cli.py`：增加 `crew` 命令族、`--allow-dirty-base` 和 `build_crew_controller()`。
+- `tests/test_cli.py`：增加 crew CLI 测试。
+
+新增测试：
+
 - `tests/test_crew_models.py`
 - `tests/test_crew_recorder.py`
 - `tests/test_blackboard.py`
 - `tests/test_task_graph.py`
+- `tests/test_worktree_manager.py`
+- `tests/test_native_claude_session.py`
 - `tests/test_worker_pool.py`
 - `tests/test_crew_controller.py`
 - `tests/test_crew_verification.py`
+- `tests/test_worker_change_recorder.py`
 - `tests/test_merge_arbiter.py`
-
-修改文件：
-
-- `src/codex_claude_orchestrator/cli.py`：增加 `crew` 命令和 `build_crew_controller()`。
-- `src/codex_claude_orchestrator/ui_server.py`：增加 crew state/API/HTML 展示。
-- `tests/test_cli.py`：增加 crew parser 和 CLI JSON 测试。
-- `tests/test_ui_server.py`：增加 crew state/API/UI 文案测试。
 
 ## Task 1: Crew Models
 
 **Files:**
+- Modify: `src/codex_claude_orchestrator/models.py`
 - Create: `src/codex_claude_orchestrator/crew_models.py`
 - Create: `tests/test_crew_models.py`
 
-- [ ] **Step 1: Write the failing model serialization tests**
+- [ ] **Step 1: Write failing model tests**
 
 ```python
 # tests/test_crew_models.py
@@ -92,70 +114,70 @@ from codex_claude_orchestrator.crew_models import (
 from codex_claude_orchestrator.models import WorkspaceMode
 
 
-def test_crew_record_to_dict_normalizes_enums_and_paths():
+def test_crew_record_serializes_enums_paths_and_worker_ids():
     crew = CrewRecord(
         crew_id="crew-1",
-        root_goal="Implement V3",
+        root_goal="Build V3 MVP",
         repo=Path("/repo"),
         status=CrewStatus.RUNNING,
-        max_workers=3,
-        active_worker_ids=["worker-1"],
-        task_graph_path=Path(".orchestrator/crews/crew-1/tasks.json"),
-        blackboard_path=Path(".orchestrator/crews/crew-1/blackboard.jsonl"),
+        active_worker_ids=["worker-explorer"],
     )
 
     data = crew.to_dict()
 
-    assert data["status"] == "running"
+    assert data["crew_id"] == "crew-1"
     assert data["repo"] == "/repo"
-    assert data["max_workers"] == 3
-    assert data["active_worker_ids"] == ["worker-1"]
+    assert data["status"] == "running"
+    assert data["active_worker_ids"] == ["worker-explorer"]
 
 
-def test_worker_task_and_blackboard_entries_serialize_consistently():
+def test_worker_task_blackboard_serialization_matches_mvp_schema():
     worker = WorkerRecord(
-        worker_id="worker-1",
+        worker_id="worker-implementer",
         crew_id="crew-1",
-        role=WorkerRole.EXPLORER,
+        role=WorkerRole.IMPLEMENTER,
         agent_profile="claude",
-        bridge_id="bridge-1",
-        workspace_mode=WorkspaceMode.READONLY,
-        workspace_path=Path("/repo"),
-        write_scope=[],
-        allowed_tools=["Read", "Glob", "Grep", "LS"],
+        native_session_id="native-1",
+        terminal_session="crew-1-worker-implementer",
+        terminal_pane="crew-1-worker-implementer:claude.0",
+        transcript_artifact="workers/worker-implementer/transcript.txt",
+        turn_marker="<<<CODEX_TURN_DONE>>>",
+        bridge_id=None,
+        workspace_mode=WorkspaceMode.WORKTREE,
+        workspace_path=Path("/tmp/worktree"),
+        workspace_allocation_artifact="workers/worker-implementer/allocation.json",
         status=WorkerStatus.RUNNING,
-        assigned_task_ids=["task-1"],
+        assigned_task_ids=["task-implementer"],
     )
     task = CrewTaskRecord(
-        task_id="task-1",
+        task_id="task-implementer",
         crew_id="crew-1",
-        title="Map architecture",
-        instructions="Read the repo and report facts.",
-        role_required=WorkerRole.EXPLORER,
+        title="Implement patch",
+        instructions="Modify the worker worktree branch.",
+        role_required=WorkerRole.IMPLEMENTER,
         status=CrewTaskStatus.ASSIGNED,
-        owner_worker_id="worker-1",
-        expected_outputs=["facts", "risks"],
+        owner_worker_id=worker.worker_id,
     )
     entry = BlackboardEntry(
         entry_id="entry-1",
         crew_id="crew-1",
-        task_id="task-1",
+        task_id=task.task_id,
         actor_type=ActorType.WORKER,
-        actor_id="worker-1",
-        type=BlackboardEntryType.FACT,
-        content="The CLI entrypoint is codex_claude_orchestrator.cli:main.",
-        evidence_refs=["src/codex_claude_orchestrator/cli.py"],
-        confidence=0.9,
+        actor_id=worker.worker_id,
+        type=BlackboardEntryType.PATCH,
+        content="Changed app.py in worker worktree.",
+        evidence_refs=["app.py"],
+        confidence=0.8,
     )
 
-    assert worker.to_dict()["role"] == "explorer"
-    assert worker.to_dict()["workspace_mode"] == "readonly"
+    assert worker.to_dict()["role"] == "implementer"
+    assert worker.to_dict()["workspace_mode"] == "worktree"
     assert task.to_dict()["status"] == "assigned"
-    assert entry.to_dict()["type"] == "fact"
     assert entry.to_dict()["actor_type"] == "worker"
+    assert entry.to_dict()["type"] == "patch"
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [ ] **Step 2: Run failing tests**
 
 Run:
 
@@ -165,9 +187,39 @@ Run:
 
 Expected: FAIL with `ModuleNotFoundError` for `codex_claude_orchestrator.crew_models`.
 
-- [ ] **Step 3: Implement V3 dataclasses and enums**
+- [ ] **Step 3: Add `WORKTREE` workspace mode**
 
-Use this structure in `src/codex_claude_orchestrator/crew_models.py`:
+Modify `src/codex_claude_orchestrator/models.py`:
+
+```python
+class WorkspaceMode(StrEnum):
+    ISOLATED = "isolated"
+    SHARED = "shared"
+    READONLY = "readonly"
+    WORKTREE = "worktree"
+```
+
+Extend `WorkspaceAllocation` with optional worktree metadata:
+
+```python
+@dataclass(slots=True)
+class WorkspaceAllocation:
+    workspace_id: str
+    path: Path
+    mode: WorkspaceMode
+    writable: bool
+    baseline_snapshot: dict[str, str] = field(default_factory=dict)
+    branch: str = ""
+    base_ref: str = ""
+    base_patch_artifact: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return _normalize(self)
+```
+
+- [ ] **Step 4: Implement crew models**
+
+Create `src/codex_claude_orchestrator/crew_models.py` with these public types:
 
 ```python
 from __future__ import annotations
@@ -208,8 +260,6 @@ class WorkerRole(StrEnum):
     EXPLORER = "explorer"
     IMPLEMENTER = "implementer"
     REVIEWER = "reviewer"
-    VERIFIER = "verifier"
-    COMPETITOR = "competitor"
 
 
 class WorkerStatus(StrEnum):
@@ -275,9 +325,15 @@ class WorkerRecord:
     crew_id: str
     role: WorkerRole
     agent_profile: str
-    bridge_id: str | None
+    native_session_id: str
+    terminal_session: str
+    terminal_pane: str
+    transcript_artifact: str
+    turn_marker: str
     workspace_mode: WorkspaceMode
     workspace_path: str | Path
+    bridge_id: str | None = None
+    workspace_allocation_artifact: str = ""
     write_scope: list[str] = field(default_factory=list)
     allowed_tools: list[str] = field(default_factory=list)
     status: WorkerStatus = WorkerStatus.CREATED
@@ -330,7 +386,7 @@ class BlackboardEntry:
         return _normalize(self)
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [ ] **Step 5: Run tests**
 
 Run:
 
@@ -340,14 +396,14 @@ Run:
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add src/codex_claude_orchestrator/crew_models.py tests/test_crew_models.py
-git commit -m "feat: add crew v3 data models"
+git add src/codex_claude_orchestrator/models.py src/codex_claude_orchestrator/crew_models.py tests/test_crew_models.py
+git commit -m "feat: add crew v3 mvp models"
 ```
 
-## Task 2: Crew Recorder And Blackboard Store
+## Task 2: CrewRecorder And BlackboardStore
 
 **Files:**
 - Create: `src/codex_claude_orchestrator/crew_recorder.py`
@@ -365,11 +421,11 @@ from codex_claude_orchestrator.crew_models import CrewRecord, CrewStatus, CrewTa
 from codex_claude_orchestrator.crew_recorder import CrewRecorder
 
 
-def test_crew_recorder_persists_crew_tasks_workers_and_final_report(tmp_path: Path):
+def test_crew_recorder_persists_crew_tasks_workers_artifacts_and_final_report(tmp_path: Path):
     recorder = CrewRecorder(tmp_path / ".orchestrator")
-    crew = CrewRecord(crew_id="crew-1", root_goal="Build V3", repo="/repo")
+    crew = CrewRecord(crew_id="crew-1", root_goal="Build V3 MVP", repo="/repo")
     task = CrewTaskRecord(
-        task_id="task-1",
+        task_id="task-explorer",
         crew_id=crew.crew_id,
         title="Explore",
         instructions="Read only.",
@@ -378,14 +434,16 @@ def test_crew_recorder_persists_crew_tasks_workers_and_final_report(tmp_path: Pa
 
     crew_dir = recorder.start_crew(crew)
     recorder.write_tasks(crew.crew_id, [task])
+    artifact = recorder.write_text_artifact(crew.crew_id, "workers/worker-1/allocation.json", "{}")
     recorder.finalize_crew(crew.crew_id, CrewStatus.ACCEPTED, "accepted")
     details = recorder.read_crew(crew.crew_id)
 
     assert crew_dir == tmp_path / ".orchestrator" / "crews" / "crew-1"
+    assert artifact.name == "allocation.json"
     assert details["crew"]["status"] == "accepted"
-    assert details["tasks"][0]["task_id"] == "task-1"
-    assert details["final_report"]["final_summary"] == "accepted"
-    assert recorder.list_crews()[0]["crew_id"] == "crew-1"
+    assert details["tasks"][0]["task_id"] == "task-explorer"
+    assert details["artifacts"] == ["workers/worker-1/allocation.json"]
+    assert recorder.latest_crew_id() == "crew-1"
 ```
 
 ```python
@@ -393,38 +451,33 @@ def test_crew_recorder_persists_crew_tasks_workers_and_final_report(tmp_path: Pa
 from pathlib import Path
 
 from codex_claude_orchestrator.blackboard import BlackboardStore
-from codex_claude_orchestrator.crew_models import (
-    ActorType,
-    BlackboardEntry,
-    BlackboardEntryType,
-    CrewRecord,
-)
+from codex_claude_orchestrator.crew_models import ActorType, BlackboardEntry, BlackboardEntryType, CrewRecord
 from codex_claude_orchestrator.crew_recorder import CrewRecorder
 
 
 def test_blackboard_appends_and_filters_entries(tmp_path: Path):
     recorder = CrewRecorder(tmp_path / ".orchestrator")
-    recorder.start_crew(CrewRecord(crew_id="crew-1", root_goal="Build V3", repo="/repo"))
-    store = BlackboardStore(recorder)
-    entry = BlackboardEntry(
-        entry_id="entry-1",
-        crew_id="crew-1",
-        task_id="task-1",
-        actor_type=ActorType.CODEX,
-        actor_id="codex",
-        type=BlackboardEntryType.DECISION,
-        content="Start explorer first.",
-        confidence=1.0,
+    recorder.start_crew(CrewRecord(crew_id="crew-1", root_goal="Build V3 MVP", repo="/repo"))
+    blackboard = BlackboardStore(recorder)
+    blackboard.append(
+        BlackboardEntry(
+            entry_id="entry-1",
+            crew_id="crew-1",
+            task_id="task-explorer",
+            actor_type=ActorType.CODEX,
+            actor_id="codex",
+            type=BlackboardEntryType.DECISION,
+            content="Start explorer first.",
+            confidence=1.0,
+        )
     )
 
-    store.append(entry)
-
-    assert store.list_entries("crew-1")[0]["entry_id"] == "entry-1"
-    assert store.list_entries("crew-1", entry_type=BlackboardEntryType.DECISION)[0]["content"] == "Start explorer first."
-    assert store.list_entries("crew-1", entry_type=BlackboardEntryType.FACT) == []
+    assert blackboard.list_entries("crew-1")[0]["entry_id"] == "entry-1"
+    assert blackboard.list_entries("crew-1", entry_type=BlackboardEntryType.DECISION)[0]["content"] == "Start explorer first."
+    assert blackboard.list_entries("crew-1", task_id="missing") == []
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [ ] **Step 2: Run failing tests**
 
 Run:
 
@@ -434,162 +487,36 @@ Run:
 
 Expected: FAIL because `crew_recorder` and `blackboard` do not exist.
 
-- [ ] **Step 3: Implement `CrewRecorder`**
+- [ ] **Step 3: Implement persistence APIs**
 
-Implement `src/codex_claude_orchestrator/crew_recorder.py` with these public methods:
+Implement `CrewRecorder` with these public methods:
 
-```python
-from __future__ import annotations
+- `start_crew(crew: CrewRecord) -> Path`
+- `update_crew(crew_id: str, updates: dict) -> dict`
+- `append_worker(crew_id: str, worker: WorkerRecord) -> None`
+- `write_tasks(crew_id: str, tasks: list[CrewTaskRecord]) -> None`
+- `append_blackboard(crew_id: str, entry: BlackboardEntry) -> None`
+- `write_text_artifact(crew_id: str, artifact_name: str, content: str) -> Path`
+- `read_text_artifact(crew_id: str, artifact_name: str) -> str`
+- `finalize_crew(crew_id: str, status: CrewStatus, final_summary: str) -> None`
+- `list_crews() -> list[dict]`
+- `read_crew(crew_id: str) -> dict`
+- `latest_crew_id() -> str | None`
 
-import json
-from pathlib import Path
-from typing import Any
+Persist files under:
 
-from codex_claude_orchestrator.crew_models import CrewRecord, CrewStatus, CrewTaskRecord, WorkerRecord, BlackboardEntry
-from codex_claude_orchestrator.models import utc_now
-
-
-class CrewRecorder:
-    def __init__(self, state_root: Path):
-        self._state_root = state_root
-        self._crews_root = state_root / "crews"
-        self._crews_root.mkdir(parents=True, exist_ok=True)
-
-    def start_crew(self, crew: CrewRecord) -> Path:
-        crew_dir = self._crew_dir(crew.crew_id)
-        crew_dir.mkdir(parents=True, exist_ok=True)
-        self._write_json(crew_dir / "crew.json", crew.to_dict())
-        self._write_latest(crew.crew_id)
-        return crew_dir
-
-    def update_crew(self, crew_id: str, updates: dict[str, Any]) -> dict[str, Any]:
-        path = self._crew_dir(crew_id) / "crew.json"
-        crew = self._read_json(path)
-        crew.update({**updates, "updated_at": utc_now()})
-        self._write_json(path, crew)
-        return crew
-
-    def append_worker(self, crew_id: str, worker: WorkerRecord) -> None:
-        self._append_jsonl(crew_id, "workers.jsonl", worker.to_dict())
-
-    def write_tasks(self, crew_id: str, tasks: list[CrewTaskRecord]) -> None:
-        self._write_json(self._crew_dir(crew_id) / "tasks.json", [task.to_dict() for task in tasks])
-
-    def append_blackboard(self, crew_id: str, entry: BlackboardEntry) -> None:
-        self._append_jsonl(crew_id, "blackboard.jsonl", entry.to_dict())
-
-    def write_text_artifact(self, crew_id: str, artifact_name: str, content: str) -> Path:
-        artifact_path = self._crew_dir(crew_id) / "artifacts" / artifact_name
-        self._write_text(artifact_path, content)
-        return artifact_path
-
-    def finalize_crew(self, crew_id: str, status: CrewStatus, final_summary: str) -> None:
-        ended_at = utc_now()
-        crew = self.update_crew(
-            crew_id,
-            {"status": status.value, "final_summary": final_summary, "ended_at": ended_at},
-        )
-        self._write_json(
-            self._crew_dir(crew_id) / "final_report.json",
-            {
-                "crew_id": crew_id,
-                "status": crew["status"],
-                "final_summary": final_summary,
-                "ended_at": ended_at,
-            },
-        )
-
-    def list_crews(self) -> list[dict[str, Any]]:
-        crews = [self._crew_summary(path.name) for path in self._iter_crew_dirs()]
-        return sorted(crews, key=lambda item: item["created_at"], reverse=True)
-
-    def read_crew(self, crew_id: str) -> dict[str, Any]:
-        crew_dir = self._crew_dir(crew_id)
-        if not crew_dir.is_dir():
-            raise FileNotFoundError(f"crew not found: {crew_id}")
-        return {
-            "crew": self._read_json(crew_dir / "crew.json"),
-            "tasks": self._read_optional_list(crew_dir / "tasks.json"),
-            "workers": self._read_jsonl(crew_dir / "workers.jsonl"),
-            "blackboard": self._read_jsonl(crew_dir / "blackboard.jsonl"),
-            "final_report": self._read_optional_json(crew_dir / "final_report.json"),
-            "artifacts": self._list_artifacts(crew_dir / "artifacts"),
-        }
-
-    def latest_crew_id(self) -> str | None:
-        latest = self._crews_root / "latest"
-        if not latest.exists():
-            return None
-        value = latest.read_text(encoding="utf-8").strip()
-        return value or None
-
-    def _crew_summary(self, crew_id: str) -> dict[str, Any]:
-        crew = self.read_crew(crew_id)["crew"]
-        return {
-            "crew_id": crew["crew_id"],
-            "root_goal": crew["root_goal"],
-            "status": crew["status"],
-            "summary": crew.get("final_summary", ""),
-            "created_at": crew["created_at"],
-            "ended_at": crew.get("ended_at"),
-        }
-
-    def _crew_dir(self, crew_id: str) -> Path:
-        return self._crews_root / crew_id
-
-    def _iter_crew_dirs(self) -> list[Path]:
-        if not self._crews_root.exists():
-            return []
-        return [path for path in self._crews_root.iterdir() if path.is_dir()]
-
-    def _write_latest(self, crew_id: str) -> None:
-        self._write_text(self._crews_root / "latest", crew_id)
-
-    def _append_jsonl(self, crew_id: str, filename: str, payload: dict[str, Any]) -> None:
-        path = self._crew_dir(crew_id) / filename
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
-
-    def _read_json(self, path: Path) -> dict[str, Any]:
-        return json.loads(path.read_text(encoding="utf-8"))
-
-    def _read_optional_json(self, path: Path) -> dict[str, Any] | None:
-        return self._read_json(path) if path.exists() else None
-
-    def _read_optional_list(self, path: Path) -> list[dict[str, Any]]:
-        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
-
-    def _read_jsonl(self, path: Path) -> list[dict[str, Any]]:
-        if not path.exists():
-            return []
-        return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
-
-    def _list_artifacts(self, artifacts_dir: Path) -> list[str]:
-        if not artifacts_dir.exists():
-            return []
-        return sorted(path.relative_to(artifacts_dir).as_posix() for path in artifacts_dir.rglob("*") if path.is_file())
-
-    def _write_json(self, path: Path, payload: dict[str, Any] | list[dict[str, Any]]) -> None:
-        self._write_text(path, json.dumps(payload, indent=2, ensure_ascii=False))
-
-    def _write_text(self, path: Path, content: str) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = path.with_name(f".{path.name}.tmp")
-        tmp_path.write_text(content, encoding="utf-8")
-        tmp_path.replace(path)
+```text
+.orchestrator/crews/<crew_id>/crew.json
+.orchestrator/crews/<crew_id>/tasks.json
+.orchestrator/crews/<crew_id>/workers.jsonl
+.orchestrator/crews/<crew_id>/blackboard.jsonl
+.orchestrator/crews/<crew_id>/artifacts/
+.orchestrator/crews/latest
 ```
 
-- [ ] **Step 4: Implement `BlackboardStore`**
+Implement `BlackboardStore` with:
 
 ```python
-# src/codex_claude_orchestrator/blackboard.py
-from __future__ import annotations
-
-from codex_claude_orchestrator.crew_models import BlackboardEntry, BlackboardEntryType
-from codex_claude_orchestrator.crew_recorder import CrewRecorder
-
-
 class BlackboardStore:
     def __init__(self, recorder: CrewRecorder):
         self._recorder = recorder
@@ -616,7 +543,7 @@ class BlackboardStore:
         return entries
 ```
 
-- [ ] **Step 5: Run tests**
+- [ ] **Step 4: Run tests**
 
 Run:
 
@@ -626,14 +553,14 @@ Run:
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add src/codex_claude_orchestrator/crew_recorder.py src/codex_claude_orchestrator/blackboard.py tests/test_crew_recorder.py tests/test_blackboard.py
 git commit -m "feat: persist crew records and blackboard"
 ```
 
-## Task 3: Task Graph Planner
+## Task 3: TaskGraphPlanner
 
 **Files:**
 - Create: `src/codex_claude_orchestrator/task_graph.py`
@@ -647,21 +574,21 @@ from codex_claude_orchestrator.crew_models import CrewTaskStatus, WorkerRole
 from codex_claude_orchestrator.task_graph import TaskGraphPlanner
 
 
-def test_default_graph_creates_role_specific_tasks_with_dependencies():
+def test_default_graph_creates_mvp_role_tasks_with_dependencies():
     planner = TaskGraphPlanner(task_id_factory=lambda role: f"task-{role.value}")
 
-    tasks = planner.default_graph("crew-1", "Fix failing tests", [WorkerRole.EXPLORER, WorkerRole.IMPLEMENTER, WorkerRole.REVIEWER])
+    tasks = planner.default_graph("crew-1", "Build V3 MVP", [WorkerRole.EXPLORER, WorkerRole.IMPLEMENTER, WorkerRole.REVIEWER])
 
     by_role = {task.role_required: task for task in tasks}
-    assert by_role[WorkerRole.EXPLORER].title == "Explore repository context"
+    assert by_role[WorkerRole.EXPLORER].depends_on == []
     assert by_role[WorkerRole.IMPLEMENTER].depends_on == ["task-explorer"]
     assert by_role[WorkerRole.REVIEWER].depends_on == ["task-implementer"]
     assert by_role[WorkerRole.REVIEWER].expected_outputs == ["review", "risks", "acceptance recommendation"]
 
 
-def test_assign_task_marks_owner_and_status():
+def test_assign_task_sets_owner_and_status():
     planner = TaskGraphPlanner(task_id_factory=lambda role: f"task-{role.value}")
-    tasks = planner.default_graph("crew-1", "Fix failing tests", [WorkerRole.EXPLORER])
+    tasks = planner.default_graph("crew-1", "Build V3 MVP", [WorkerRole.EXPLORER])
 
     assigned = planner.assign(tasks, "task-explorer", "worker-explorer")
 
@@ -669,7 +596,7 @@ def test_assign_task_marks_owner_and_status():
     assert assigned[0].status == CrewTaskStatus.ASSIGNED
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [ ] **Step 2: Run failing tests**
 
 Run:
 
@@ -679,96 +606,15 @@ Run:
 
 Expected: FAIL because `task_graph` does not exist.
 
-- [ ] **Step 3: Implement `TaskGraphPlanner`**
+- [ ] **Step 3: Implement planner**
 
-```python
-# src/codex_claude_orchestrator/task_graph.py
-from __future__ import annotations
+Implement `TaskGraphPlanner.default_graph()` for only these MVP roles:
 
-from collections.abc import Callable
+- `explorer`: read-only facts, risks, relevant files.
+- `implementer`: isolated patch, changed files, verification notes.
+- `reviewer`: review, risks, acceptance recommendation.
 
-from codex_claude_orchestrator.crew_models import CrewTaskRecord, CrewTaskStatus, WorkerRole
-from codex_claude_orchestrator.models import utc_now
-
-
-class TaskGraphPlanner:
-    def __init__(self, task_id_factory: Callable[[WorkerRole], str] | None = None):
-        self._task_id_factory = task_id_factory or (lambda role: f"task-{role.value}")
-
-    def default_graph(self, crew_id: str, goal: str, roles: list[WorkerRole]) -> list[CrewTaskRecord]:
-        tasks: list[CrewTaskRecord] = []
-        previous_task_id: str | None = None
-        for role in roles:
-            task_id = self._task_id_factory(role)
-            task = self._task_for_role(crew_id, goal, role, task_id)
-            if previous_task_id and role in {WorkerRole.IMPLEMENTER, WorkerRole.REVIEWER, WorkerRole.VERIFIER}:
-                task.depends_on = [previous_task_id]
-                task.blocked_by = [previous_task_id]
-            tasks.append(task)
-            previous_task_id = task_id
-        return tasks
-
-    def assign(self, tasks: list[CrewTaskRecord], task_id: str, worker_id: str) -> list[CrewTaskRecord]:
-        updated: list[CrewTaskRecord] = []
-        for task in tasks:
-            if task.task_id == task_id:
-                task.owner_worker_id = worker_id
-                task.status = CrewTaskStatus.ASSIGNED
-                task.updated_at = utc_now()
-            updated.append(task)
-        return updated
-
-    def _task_for_role(self, crew_id: str, goal: str, role: WorkerRole, task_id: str) -> CrewTaskRecord:
-        if role is WorkerRole.EXPLORER:
-            return CrewTaskRecord(
-                task_id=task_id,
-                crew_id=crew_id,
-                title="Explore repository context",
-                instructions=f"Read the repository for this goal without modifying files: {goal}",
-                role_required=role,
-                expected_outputs=["facts", "risks", "relevant files"],
-                acceptance_criteria=["facts are grounded in file paths", "risks are specific"],
-            )
-        if role is WorkerRole.IMPLEMENTER:
-            return CrewTaskRecord(
-                task_id=task_id,
-                crew_id=crew_id,
-                title="Implement scoped patch",
-                instructions=f"Implement the requested change in an isolated workspace: {goal}",
-                role_required=role,
-                expected_outputs=["patch", "changed files", "verification notes"],
-                acceptance_criteria=["patch is scoped", "unrelated files are preserved"],
-            )
-        if role is WorkerRole.REVIEWER:
-            return CrewTaskRecord(
-                task_id=task_id,
-                crew_id=crew_id,
-                title="Review proposed patch",
-                instructions=f"Review the implementer output against this goal: {goal}",
-                role_required=role,
-                expected_outputs=["review", "risks", "acceptance recommendation"],
-                acceptance_criteria=["review references evidence", "blocking risks are explicit"],
-            )
-        if role is WorkerRole.VERIFIER:
-            return CrewTaskRecord(
-                task_id=task_id,
-                crew_id=crew_id,
-                title="Verify crew evidence",
-                instructions=f"Run or propose verification for this goal: {goal}",
-                role_required=role,
-                expected_outputs=["verification", "command results", "remaining risks"],
-                acceptance_criteria=["commands and results are recorded"],
-            )
-        return CrewTaskRecord(
-            task_id=task_id,
-            crew_id=crew_id,
-            title="Produce competing implementation",
-            instructions=f"Produce an alternate isolated implementation for this goal: {goal}",
-            role_required=role,
-            expected_outputs=["alternate patch", "tradeoffs", "verification notes"],
-            acceptance_criteria=["tradeoffs are explicit", "patch is isolated"],
-        )
-```
+Implement `TaskGraphPlanner.assign(tasks, task_id, worker_id)` by setting `owner_worker_id`, `status=ASSIGNED`, and `updated_at`.
 
 - [ ] **Step 4: Run tests**
 
@@ -787,100 +633,329 @@ git add src/codex_claude_orchestrator/task_graph.py tests/test_task_graph.py
 git commit -m "feat: add crew task graph planner"
 ```
 
-## Task 4: WorkerPool Over ClaudeBridge
+## Task 4: Worktree Manager, Native Claude Session, And WorkerPool Lifecycle
 
 **Files:**
+- Create: `src/codex_claude_orchestrator/worktree_manager.py`
+- Create: `src/codex_claude_orchestrator/native_claude_session.py`
 - Create: `src/codex_claude_orchestrator/worker_pool.py`
+- Create: `tests/test_worktree_manager.py`
+- Create: `tests/test_native_claude_session.py`
 - Create: `tests/test_worker_pool.py`
 
-- [ ] **Step 1: Write failing WorkerPool tests**
+- [ ] **Step 1: Write failing worktree manager tests**
+
+```python
+# tests/test_worktree_manager.py
+from pathlib import Path
+from subprocess import CompletedProcess
+
+import pytest
+
+from codex_claude_orchestrator.models import WorkspaceMode
+from codex_claude_orchestrator.worktree_manager import DirtyWorktreeError, WorktreeManager
+
+
+class FakeGitRunner:
+    def __init__(self, dirty_output: str = ""):
+        self.dirty_output = dirty_output
+        self.calls = []
+
+    def __call__(self, command, **kwargs):
+        self.calls.append((command, kwargs))
+        if command[:3] == ["git", "rev-parse", "--is-inside-work-tree"]:
+            return CompletedProcess(command, 0, stdout="true\n", stderr="")
+        if command[:2] == ["git", "status"]:
+            return CompletedProcess(command, 0, stdout=self.dirty_output, stderr="")
+        if command[:2] == ["git", "rev-parse"]:
+            return CompletedProcess(command, 0, stdout="base-sha\n", stderr="")
+        if command[:2] == ["git", "diff"]:
+            return CompletedProcess(command, 0, stdout="src/app.py\n", stderr="")
+        return CompletedProcess(command, 0, stdout="", stderr="")
+
+
+def test_worktree_manager_creates_branch_worktree_for_clean_repo(tmp_path: Path):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    runner = FakeGitRunner()
+    manager = WorktreeManager(
+        state_root=tmp_path / ".orchestrator",
+        runner=runner,
+        branch_name_factory=lambda crew_id, worker_id: f"codex/{crew_id}-{worker_id}",
+    )
+
+    allocation = manager.prepare(repo_root=repo_root, crew_id="crew-1", worker_id="worker-implementer")
+    changed = manager.changed_files(allocation)
+
+    assert allocation.mode == WorkspaceMode.WORKTREE
+    assert allocation.path == tmp_path / ".orchestrator" / "worktrees" / "crew-1" / "worker-implementer"
+    assert allocation.branch == "codex/crew-1-worker-implementer"
+    assert allocation.base_ref == "base-sha"
+    assert changed == ["src/app.py"]
+    assert ["git", "worktree", "add", "-b", "codex/crew-1-worker-implementer", str(allocation.path), "base-sha"] in [
+        call[0] for call in runner.calls
+    ]
+
+
+def test_worktree_manager_blocks_dirty_repo_by_default(tmp_path: Path):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    manager = WorktreeManager(
+        state_root=tmp_path / ".orchestrator",
+        runner=FakeGitRunner(dirty_output=" M app.py\n"),
+    )
+
+    with pytest.raises(DirtyWorktreeError, match="repo has uncommitted changes"):
+        manager.prepare(repo_root=repo_root, crew_id="crew-1", worker_id="worker-implementer")
+```
+
+- [ ] **Step 2: Run failing worktree manager tests**
+
+Run:
+
+```bash
+.venv/bin/python -m pytest tests/test_worktree_manager.py -v
+```
+
+Expected: FAIL because `worktree_manager` does not exist.
+
+- [ ] **Step 3: Implement `WorktreeManager`**
+
+Create `src/codex_claude_orchestrator/worktree_manager.py` with:
+
+- `DirtyWorktreeError`
+- `NotGitRepositoryError`
+- `WorktreeManager.prepare(repo_root, crew_id, worker_id, allow_dirty_base=False) -> WorkspaceAllocation`
+- `WorktreeManager.changed_files(allocation) -> list[str]`
+
+Rules:
+
+- Check git repo with `git rev-parse --is-inside-work-tree`.
+- Check dirty state with `git status --porcelain`.
+- If dirty and `allow_dirty_base=False`, raise `DirtyWorktreeError` with dirty paths.
+- If dirty and `allow_dirty_base=True`, write `git diff --binary HEAD` to `workers/<worker_id>/dirty-base.patch`, apply it inside the created worktree, and set `base_patch_artifact`.
+- Resolve base with `git rev-parse HEAD`.
+- Create branch name via `branch_name_factory(crew_id, worker_id)` or default `codex/<crew_id>-<worker_id>`.
+- If branch creation fails because the branch already exists, append a short suffix and record the original requested branch in the allocation artifact.
+- Create worktree at `<state_root>/worktrees/<crew_id>/<worker_id>` with `git worktree add -b <branch> <path> <base_ref>`.
+- Return `WorkspaceAllocation(mode=WorkspaceMode.WORKTREE, writable=True, branch=branch, base_ref=base_ref)`.
+- `changed_files()` runs `git diff --name-only <base_ref>...HEAD` inside the worktree.
+
+- [ ] **Step 4: Run worktree manager tests**
+
+Run:
+
+```bash
+.venv/bin/python -m pytest tests/test_worktree_manager.py -v
+```
+
+Expected: PASS.
+
+- [ ] **Step 5: Write failing native session tests**
+
+```python
+# tests/test_native_claude_session.py
+from pathlib import Path
+from subprocess import CompletedProcess
+
+from codex_claude_orchestrator.native_claude_session import NativeClaudeSession
+
+
+class FakeTmuxRunner:
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, command, **kwargs):
+        self.calls.append((command, kwargs))
+        if command[:3] == ["tmux", "capture-pane", "-p"]:
+            return CompletedProcess(command, 0, stdout="Claude is editing\n<<<CODEX_TURN_DONE status=ready_for_codex>>>\n", stderr="")
+        if command[:3] == ["tmux", "has-session", "-t"]:
+            return CompletedProcess(command, 0, stdout="", stderr="")
+        return CompletedProcess(command, 0, stdout="", stderr="")
+
+
+def test_native_session_starts_claude_in_tmux_with_transcript_and_marker(tmp_path: Path):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    transcript = tmp_path / "transcript.txt"
+    runner = FakeTmuxRunner()
+    session = NativeClaudeSession(
+        tmux="tmux",
+        runner=runner,
+        session_name_factory=lambda worker_id: f"crew-1-{worker_id}",
+        turn_marker="<<<CODEX_TURN_DONE status=ready_for_codex>>>",
+    )
+
+    started = session.start(
+        repo_root=repo_root,
+        worker_id="worker-explorer",
+        role="explorer",
+        instructions="Read only. Report facts and risks.",
+        transcript_path=transcript,
+    )
+    sent = session.send(
+        terminal_pane=started["terminal_pane"],
+        message="Continue the investigation.",
+    )
+    observed = session.observe(terminal_pane=started["terminal_pane"], lines=200)
+    tailed = session.tail(transcript_path=transcript, limit=20)
+    status = session.status(terminal_session=started["terminal_session"])
+    attached = session.attach(terminal_session=started["terminal_session"])
+
+    commands = [call[0] for call in runner.calls]
+    assert started == {
+        "native_session_id": "crew-1-worker-explorer",
+        "terminal_session": "crew-1-worker-explorer",
+        "terminal_pane": "crew-1-worker-explorer:claude.0",
+        "transcript_artifact": str(transcript),
+        "turn_marker": "<<<CODEX_TURN_DONE status=ready_for_codex>>>",
+    }
+    assert any(command[:4] == ["tmux", "new-session", "-d", "-s"] for command in commands)
+    assert any(command[:4] == ["tmux", "send-keys", "-t", "crew-1-worker-explorer:claude.0"] for command in commands)
+    assert "Continue the investigation." in sent["message"]
+    assert "<<<CODEX_TURN_DONE" in sent["message"]
+    assert observed["marker_seen"] is True
+    assert tailed["transcript_artifact"] == str(transcript)
+    assert status["running"] is True
+    assert attached["attach_command"] == "tmux attach -t crew-1-worker-explorer"
+```
+
+- [ ] **Step 6: Run failing native session tests**
+
+Run:
+
+```bash
+.venv/bin/python -m pytest tests/test_native_claude_session.py -v
+```
+
+Expected: FAIL because `native_claude_session` does not exist.
+
+- [ ] **Step 7: Implement `NativeClaudeSession`**
+
+Create `src/codex_claude_orchestrator/native_claude_session.py` with these public methods:
+
+- `start(repo_root, worker_id, role, instructions, transcript_path) -> dict`
+- `send(terminal_pane, message) -> dict`
+- `observe(terminal_pane, lines=200) -> dict`
+- `tail(transcript_path, limit=80) -> dict`
+- `status(terminal_session) -> dict`
+- `attach(terminal_session) -> dict`
+
+Rules:
+
+- Start a detached tmux session named by `session_name_factory(worker_id)`.
+- Create one `claude` window and run native Claude Code CLI inside it.
+- Wrap native `claude` with `script -q <transcript_path> claude` so the terminal transcript is preserved as an artifact.
+- Send the initial prompt after the CLI starts; include role, workspace path, task instructions, and the required turn marker.
+- `send()` appends `When this turn is complete, print exactly: <marker>` to every Codex instruction.
+- `observe()` uses `tmux capture-pane -p -t <pane> -S -<lines>` and returns `marker_seen`.
+- `tail()` reads the transcript artifact from disk when present and returns the last `limit` lines.
+- `status()` uses `tmux has-session -t <session>` and returns `running`.
+- `attach()` returns the exact command string `tmux attach -t <session>` and may also call tmux when the CLI command requests an interactive attach.
+
+- [ ] **Step 8: Run native session tests**
+
+Run:
+
+```bash
+.venv/bin/python -m pytest tests/test_native_claude_session.py -v
+```
+
+Expected: PASS.
+
+- [ ] **Step 9: Write failing WorkerPool lifecycle tests**
 
 ```python
 # tests/test_worker_pool.py
 from pathlib import Path
 
 from codex_claude_orchestrator.blackboard import BlackboardStore
-from codex_claude_orchestrator.crew_models import (
-    BlackboardEntryType,
-    CrewRecord,
-    CrewTaskRecord,
-    WorkerRole,
-    WorkerStatus,
-)
+from codex_claude_orchestrator.crew_models import CrewRecord, CrewTaskRecord, WorkerRole
 from codex_claude_orchestrator.crew_recorder import CrewRecorder
-from codex_claude_orchestrator.models import WorkspaceMode
+from codex_claude_orchestrator.models import WorkspaceAllocation, WorkspaceMode
 from codex_claude_orchestrator.worker_pool import WorkerPool
-from codex_claude_orchestrator.workspace_manager import WorkspaceManager
 
 
-class FakeBridge:
+class FakeWorktreeManager:
+    def __init__(self):
+        self.prepared = []
+
+    def prepare(self, *, repo_root, crew_id, worker_id, allow_dirty_base=False):
+        self.prepared.append(
+            {
+                "repo_root": repo_root,
+                "crew_id": crew_id,
+                "worker_id": worker_id,
+                "allow_dirty_base": allow_dirty_base,
+            }
+        )
+        path = repo_root.parent / ".orchestrator" / "worktrees" / crew_id / worker_id
+        path.mkdir(parents=True, exist_ok=True)
+        return WorkspaceAllocation(
+            workspace_id=f"{crew_id}-{worker_id}",
+            path=path,
+            mode=WorkspaceMode.WORKTREE,
+            writable=True,
+            branch=f"codex/{crew_id}-{worker_id}",
+            base_ref="base-sha",
+        )
+
+
+class FakeNativeSession:
     def __init__(self):
         self.starts = []
+        self.sends = []
+        self.observes = []
 
     def start(self, **kwargs):
         self.starts.append(kwargs)
+        terminal_session = f"crew-1-{kwargs['worker_id']}"
         return {
-            "bridge": {
-                "bridge_id": "bridge-1",
-                "status": "active",
-                "workspace_mode": kwargs["workspace_mode"],
-            },
-            "latest_turn": {"turn_id": "turn-1", "result_text": "worker started"},
+            "native_session_id": f"native-{kwargs['worker_id']}",
+            "terminal_session": terminal_session,
+            "terminal_pane": f"{terminal_session}:claude.0",
+            "transcript_artifact": str(kwargs["transcript_path"]),
+            "turn_marker": "<<<CODEX_TURN_DONE status=ready_for_codex>>>",
         }
 
+    def send(self, **kwargs):
+        self.sends.append(kwargs)
+        return {
+            "message": kwargs["message"],
+            "marker": "<<<CODEX_TURN_DONE status=ready_for_codex>>>",
+            "marker_seen": True,
+        }
 
-def test_worker_pool_starts_readonly_explorer_and_records_worker(tmp_path: Path):
-    repo_root = tmp_path / "repo"
-    repo_root.mkdir()
-    recorder = CrewRecorder(repo_root / ".orchestrator")
-    crew = CrewRecord(crew_id="crew-1", root_goal="Build V3", repo=repo_root)
-    recorder.start_crew(crew)
-    blackboard = BlackboardStore(recorder)
-    fake_bridge = FakeBridge()
-    pool = WorkerPool(
-        recorder=recorder,
-        blackboard=blackboard,
-        workspace_manager=WorkspaceManager(repo_root / ".orchestrator"),
-        bridge_factory=lambda: fake_bridge,
-        worker_id_factory=lambda role: f"worker-{role.value}",
-        entry_id_factory=lambda: "entry-worker-started",
-    )
-    task = CrewTaskRecord(
-        task_id="task-explorer",
-        crew_id=crew.crew_id,
-        title="Explore",
-        instructions="Read only.",
-        role_required=WorkerRole.EXPLORER,
-    )
+    def observe(self, **kwargs):
+        self.observes.append(kwargs)
+        return {"snapshot": "Claude is editing", "marker_seen": False}
 
-    worker = pool.start_worker(repo_root=repo_root, crew=crew, task=task)
+    def status(self, **kwargs):
+        return {"running": True, "terminal_session": kwargs["terminal_session"]}
 
-    assert worker.worker_id == "worker-explorer"
-    assert worker.role == WorkerRole.EXPLORER
-    assert worker.status == WorkerStatus.RUNNING
-    assert worker.workspace_mode == WorkspaceMode.READONLY
-    assert fake_bridge.starts[0]["repo_root"] == repo_root.resolve()
-    assert fake_bridge.starts[0]["workspace_mode"] == "readonly"
-    details = recorder.read_crew(crew.crew_id)
-    assert details["workers"][0]["bridge_id"] == "bridge-1"
-    assert details["blackboard"][0]["type"] == BlackboardEntryType.DECISION.value
+    def tail(self, **kwargs):
+        return {"transcript_artifact": str(kwargs["transcript_path"]), "lines": ["started"]}
+
+    def attach(self, **kwargs):
+        return {"attach_command": f"tmux attach -t {kwargs['terminal_session']}"}
 
 
-def test_worker_pool_uses_isolated_workspace_for_implementer(tmp_path: Path):
+def test_worker_pool_starts_implementer_in_worktree_and_records_allocation(tmp_path: Path):
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
     (repo_root / "app.py").write_text("print('one')\n", encoding="utf-8")
     recorder = CrewRecorder(repo_root / ".orchestrator")
-    crew = CrewRecord(crew_id="crew-1", root_goal="Build V3", repo=repo_root)
+    crew = CrewRecord(crew_id="crew-1", root_goal="Build V3 MVP", repo=repo_root)
     recorder.start_crew(crew)
-    fake_bridge = FakeBridge()
+    fake_native = FakeNativeSession()
+    fake_worktree = FakeWorktreeManager()
     pool = WorkerPool(
         recorder=recorder,
         blackboard=BlackboardStore(recorder),
-        workspace_manager=WorkspaceManager(repo_root / ".orchestrator"),
-        bridge_factory=lambda: fake_bridge,
+        worktree_manager=fake_worktree,
+        native_session=fake_native,
         worker_id_factory=lambda role: f"worker-{role.value}",
-        entry_id_factory=lambda: "entry-impl-started",
+        entry_id_factory=lambda: "entry-worker-started",
     )
     task = CrewTaskRecord(
         task_id="task-implementer",
@@ -892,13 +967,59 @@ def test_worker_pool_uses_isolated_workspace_for_implementer(tmp_path: Path):
 
     worker = pool.start_worker(repo_root=repo_root, crew=crew, task=task)
 
-    assert worker.workspace_mode == WorkspaceMode.ISOLATED
+    assert worker.workspace_mode == WorkspaceMode.WORKTREE
     assert Path(worker.workspace_path) != repo_root
-    assert fake_bridge.starts[0]["repo_root"] == Path(worker.workspace_path)
-    assert fake_bridge.starts[0]["workspace_mode"] == "shared"
+    assert worker.workspace_allocation_artifact == "workers/worker-implementer/allocation.json"
+    assert worker.native_session_id == "native-worker-implementer"
+    assert worker.terminal_pane == "crew-1-worker-implementer:claude.0"
+    assert "transcript.txt" in worker.transcript_artifact
+    assert fake_native.starts[0]["repo_root"] == Path(worker.workspace_path)
+    assert fake_native.starts[0]["role"] == "implementer"
+    assert fake_worktree.prepared[0]["worker_id"] == "worker-implementer"
+    assert fake_worktree.prepared[0]["allow_dirty_base"] is False
+    assert recorder.read_crew(crew.crew_id)["workers"][0]["native_session_id"] == "native-worker-implementer"
+
+
+def test_worker_pool_can_send_observe_attach_tail_and_status_existing_worker(tmp_path: Path):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    recorder = CrewRecorder(repo_root / ".orchestrator")
+    crew = CrewRecord(crew_id="crew-1", root_goal="Build V3 MVP", repo=repo_root)
+    recorder.start_crew(crew)
+    fake_native = FakeNativeSession()
+    fake_worktree = FakeWorktreeManager()
+    pool = WorkerPool(
+        recorder=recorder,
+        blackboard=BlackboardStore(recorder),
+        worktree_manager=fake_worktree,
+        native_session=fake_native,
+        worker_id_factory=lambda role: f"worker-{role.value}",
+        entry_id_factory=lambda: "entry-worker",
+    )
+    task = CrewTaskRecord(
+        task_id="task-explorer",
+        crew_id=crew.crew_id,
+        title="Explore",
+        instructions="Read only.",
+        role_required=WorkerRole.EXPLORER,
+    )
+    worker = pool.start_worker(repo_root=repo_root, crew=crew, task=task)
+
+    sent = pool.send_worker(repo_root=repo_root, crew_id=crew.crew_id, worker_id=worker.worker_id, message="continue")
+    observed = pool.observe_worker(repo_root=repo_root, crew_id=crew.crew_id, worker_id=worker.worker_id, lines=120)
+    attached = pool.attach_worker(repo_root=repo_root, crew_id=crew.crew_id, worker_id=worker.worker_id)
+    tail = pool.tail_worker(repo_root=repo_root, crew_id=crew.crew_id, worker_id=worker.worker_id, limit=5)
+    status = pool.status_worker(repo_root=repo_root, crew_id=crew.crew_id, worker_id=worker.worker_id)
+
+    assert sent["marker_seen"] is True
+    assert observed["snapshot"] == "Claude is editing"
+    assert attached["attach_command"] == "tmux attach -t crew-1-worker-explorer"
+    assert tail["lines"] == ["started"]
+    assert status["running"] is True
+    assert fake_native.sends[0]["terminal_pane"] == "crew-1-worker-explorer:claude.0"
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [ ] **Step 10: Run failing WorkerPool tests**
 
 Run:
 
@@ -908,168 +1029,55 @@ Run:
 
 Expected: FAIL because `worker_pool` does not exist.
 
-- [ ] **Step 3: Implement `WorkerPool`**
+- [ ] **Step 11: Implement `WorkerPool` public API**
 
-```python
-# src/codex_claude_orchestrator/worker_pool.py
-from __future__ import annotations
+Create `src/codex_claude_orchestrator/worker_pool.py` with:
 
-from collections.abc import Callable
-from pathlib import Path
-from uuid import uuid4
+- `start_worker(repo_root, crew, task, allow_dirty_base=False) -> WorkerRecord`
+- `send_worker(repo_root, crew_id, worker_id, message) -> dict`
+- `observe_worker(repo_root, crew_id, worker_id, lines) -> dict`
+- `attach_worker(repo_root, crew_id, worker_id) -> dict`
+- `tail_worker(repo_root, crew_id, worker_id, limit) -> dict`
+- `status_worker(repo_root, crew_id, worker_id) -> dict`
 
-from codex_claude_orchestrator.blackboard import BlackboardStore
-from codex_claude_orchestrator.claude_bridge import ClaudeBridge
-from codex_claude_orchestrator.crew_models import (
-    ActorType,
-    BlackboardEntry,
-    BlackboardEntryType,
-    CrewRecord,
-    CrewTaskRecord,
-    WorkerRecord,
-    WorkerRole,
-    WorkerStatus,
-)
-from codex_claude_orchestrator.crew_recorder import CrewRecorder
-from codex_claude_orchestrator.models import TaskRecord, WorkspaceMode, utc_now
-from codex_claude_orchestrator.workspace_manager import WorkspaceManager
+Rules:
 
+- `explorer` and `reviewer` use `WorkspaceMode.READONLY` and start native Claude in the repo root with read-only role instructions.
+- `implementer` uses `WorkspaceMode.WORKTREE`, allocates a branch/worktree through `WorktreeManager`, and starts native Claude inside that worktree.
+- `allow_dirty_base` defaults to `False`; propagate it to `WorktreeManager.prepare()` from `CrewController.start()`.
+- `start_worker()` writes allocation JSON to `workers/<worker_id>/allocation.json`.
+- `start_worker()` writes transcript to `workers/<worker_id>/transcript.txt`.
+- `send_worker()` appends a `decision` entry before send and a `claim` entry after send with marker/evidence fields from the native session response.
+- `observe_worker()` captures the current tmux pane snapshot and records no blackboard entry unless the caller explicitly challenges or accepts.
+- `attach_worker()` returns the native attach command for a human-visible Claude Code CLI session.
+- Worker lookup reads `recorder.read_crew(crew_id)["workers"]` and matches by `worker_id`.
 
-BridgeFactory = Callable[[], ClaudeBridge]
-
-
-class WorkerPool:
-    def __init__(
-        self,
-        *,
-        recorder: CrewRecorder,
-        blackboard: BlackboardStore,
-        workspace_manager: WorkspaceManager,
-        bridge_factory: BridgeFactory,
-        worker_id_factory: Callable[[WorkerRole], str] | None = None,
-        entry_id_factory: Callable[[], str] | None = None,
-    ):
-        self._recorder = recorder
-        self._blackboard = blackboard
-        self._workspace_manager = workspace_manager
-        self._bridge_factory = bridge_factory
-        self._worker_id_factory = worker_id_factory or (lambda role: f"worker-{role.value}-{uuid4().hex}")
-        self._entry_id_factory = entry_id_factory or (lambda: f"entry-{uuid4().hex}")
-
-    def start_worker(self, *, repo_root: Path, crew: CrewRecord, task: CrewTaskRecord) -> WorkerRecord:
-        worker_id = self._worker_id_factory(task.role_required)
-        allocation_mode = self._allocation_mode(task.role_required)
-        allocation = self._workspace_manager.prepare(
-            repo_root,
-            TaskRecord(
-                task_id=f"{crew.crew_id}-{worker_id}",
-                parent_task_id=None,
-                origin="crew",
-                assigned_agent="claude",
-                goal=task.instructions,
-                task_type=f"crew-{task.role_required.value}",
-                scope=str(repo_root),
-                workspace_mode=allocation_mode,
-                allowed_tools=self._allowed_tools(task.role_required),
-            ),
-        )
-        bridge_workspace_mode = "readonly" if allocation_mode is WorkspaceMode.READONLY else "shared"
-        bridge = self._bridge_factory()
-        result = bridge.start(
-            repo_root=allocation.path,
-            goal=self._render_worker_goal(crew, task),
-            workspace_mode=bridge_workspace_mode,
-            visual="none",
-            dry_run=False,
-            supervised=True,
-        )
-        bridge_id = str(result["bridge"]["bridge_id"])
-        now = utc_now()
-        worker = WorkerRecord(
-            worker_id=worker_id,
-            crew_id=crew.crew_id,
-            role=task.role_required,
-            agent_profile="claude",
-            bridge_id=bridge_id,
-            workspace_mode=allocation.mode,
-            workspace_path=allocation.path,
-            write_scope=task.allowed_paths,
-            allowed_tools=self._allowed_tools(task.role_required),
-            status=WorkerStatus.RUNNING,
-            assigned_task_ids=[task.task_id],
-            last_seen_at=now,
-            updated_at=now,
-        )
-        self._recorder.append_worker(crew.crew_id, worker)
-        self._blackboard.append(
-            BlackboardEntry(
-                entry_id=self._entry_id_factory(),
-                crew_id=crew.crew_id,
-                task_id=task.task_id,
-                actor_type=ActorType.CODEX,
-                actor_id="codex",
-                type=BlackboardEntryType.DECISION,
-                content=f"Started {task.role_required.value} worker {worker_id} with bridge {bridge_id}.",
-                evidence_refs=[bridge_id],
-                confidence=1.0,
-            )
-        )
-        return worker
-
-    def _allocation_mode(self, role: WorkerRole) -> WorkspaceMode:
-        if role in {WorkerRole.IMPLEMENTER, WorkerRole.COMPETITOR}:
-            return WorkspaceMode.ISOLATED
-        return WorkspaceMode.READONLY
-
-    def _allowed_tools(self, role: WorkerRole) -> list[str]:
-        if role in {WorkerRole.EXPLORER, WorkerRole.REVIEWER, WorkerRole.VERIFIER}:
-            return ["Read", "Glob", "Grep", "LS"]
-        return []
-
-    def _render_worker_goal(self, crew: CrewRecord, task: CrewTaskRecord) -> str:
-        return (
-            f"Crew goal: {crew.root_goal}\n"
-            f"Your role: {task.role_required.value}\n"
-            f"Task: {task.title}\n"
-            f"Instructions: {task.instructions}\n"
-            "Report concrete evidence. Preserve unrelated user work."
-        )
-```
-
-- [ ] **Step 4: Run tests**
+- [ ] **Step 12: Run tests and regressions**
 
 Run:
 
 ```bash
-.venv/bin/python -m pytest tests/test_worker_pool.py -v
+.venv/bin/python -m pytest tests/test_worktree_manager.py tests/test_native_claude_session.py tests/test_worker_pool.py tests/test_tmux_console.py tests/test_workspace_manager.py -q
 ```
 
 Expected: PASS.
 
-- [ ] **Step 5: Run existing bridge/workspace regression tests**
-
-Run:
+- [ ] **Step 13: Commit**
 
 ```bash
-.venv/bin/python -m pytest tests/test_claude_bridge.py tests/test_workspace_manager.py -q
+git add src/codex_claude_orchestrator/worktree_manager.py src/codex_claude_orchestrator/native_claude_session.py src/codex_claude_orchestrator/worker_pool.py tests/test_worktree_manager.py tests/test_native_claude_session.py tests/test_worker_pool.py
+git commit -m "feat: manage native claude crew workers"
 ```
 
-Expected: PASS.
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add src/codex_claude_orchestrator/worker_pool.py tests/test_worker_pool.py
-git commit -m "feat: manage claude bridge crew workers"
-```
-
-## Task 5: CrewController Start Flow
+## Task 5: CrewController And Crew CLI
 
 **Files:**
 - Create: `src/codex_claude_orchestrator/crew_controller.py`
+- Modify: `src/codex_claude_orchestrator/cli.py`
 - Create: `tests/test_crew_controller.py`
+- Modify: `tests/test_cli.py`
 
-- [ ] **Step 1: Write failing controller tests**
+- [ ] **Step 1: Write failing controller and CLI tests**
 
 ```python
 # tests/test_crew_controller.py
@@ -1085,20 +1093,34 @@ from codex_claude_orchestrator.task_graph import TaskGraphPlanner
 class FakeWorkerPool:
     def __init__(self):
         self.started = []
+        self.sent = []
+        self.observed = []
+        self.attached = []
 
-    def start_worker(self, *, repo_root, crew, task):
-        self.started.append((repo_root, crew.crew_id, task.task_id, task.role_required))
-        return type(
-            "Worker",
-            (),
-            {
-                "worker_id": f"worker-{task.role_required.value}",
-                "to_dict": lambda self: {"worker_id": self.worker_id},
-            },
-        )()
+    def start_worker(self, *, repo_root, crew, task, allow_dirty_base=False):
+        self.started.append((repo_root, crew.crew_id, task.task_id, task.role_required, allow_dirty_base))
+        return type("Worker", (), {"worker_id": f"worker-{task.role_required.value}"})()
+
+    def send_worker(self, **kwargs):
+        self.sent.append(kwargs)
+        return {"message": kwargs["message"], "marker_seen": True}
+
+    def observe_worker(self, **kwargs):
+        self.observed.append(kwargs)
+        return {"snapshot": "Claude is reading files", "marker_seen": False}
+
+    def attach_worker(self, **kwargs):
+        self.attached.append(kwargs)
+        return {"attach_command": "tmux attach -t crew-1-worker-explorer"}
+
+    def tail_worker(self, **kwargs):
+        return {"lines": ["worker transcript line"]}
+
+    def status_worker(self, **kwargs):
+        return {"running": True, "terminal_session": "crew-1-worker-explorer"}
 
 
-def test_crew_controller_starts_default_crew_and_records_tasks(tmp_path: Path):
+def test_controller_starts_crew_and_delegates_worker_terminal_commands(tmp_path: Path):
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
     recorder = CrewRecorder(repo_root / ".orchestrator")
@@ -1114,341 +1136,109 @@ def test_crew_controller_starts_default_crew_and_records_tasks(tmp_path: Path):
 
     crew = controller.start(
         repo_root=repo_root,
-        goal="Build V3",
-        worker_roles=[WorkerRole.EXPLORER, WorkerRole.IMPLEMENTER, WorkerRole.REVIEWER],
+        goal="Build V3 MVP",
+        worker_roles=[WorkerRole.EXPLORER, WorkerRole.IMPLEMENTER],
+        allow_dirty_base=False,
     )
+    sent = controller.send_worker(repo_root=repo_root, crew_id=crew.crew_id, worker_id="worker-explorer", message="continue")
+    observed = controller.observe_worker(repo_root=repo_root, crew_id=crew.crew_id, worker_id="worker-explorer", lines=120)
+    attached = controller.attach_worker(repo_root=repo_root, crew_id=crew.crew_id, worker_id="worker-explorer")
+    tail = controller.tail_worker(repo_root=repo_root, crew_id=crew.crew_id, worker_id="worker-explorer", limit=5)
+    status = controller.status_worker(repo_root=repo_root, crew_id=crew.crew_id, worker_id="worker-explorer")
 
-    details = recorder.read_crew("crew-1")
     assert crew.status == CrewStatus.RUNNING
-    assert crew.active_worker_ids == ["worker-explorer", "worker-implementer", "worker-reviewer"]
-    assert [item[3] for item in pool.started] == [WorkerRole.EXPLORER, WorkerRole.IMPLEMENTER, WorkerRole.REVIEWER]
-    assert [task["task_id"] for task in details["tasks"]] == ["task-explorer", "task-implementer", "task-reviewer"]
-    assert details["blackboard"][0]["type"] == "decision"
+    assert crew.active_worker_ids == ["worker-explorer", "worker-implementer"]
+    assert pool.started[1][4] is False
+    assert sent["marker_seen"] is True
+    assert observed["snapshot"] == "Claude is reading files"
+    assert attached["attach_command"] == "tmux attach -t crew-1-worker-explorer"
+    assert tail["lines"] == ["worker transcript line"]
+    assert status["running"] is True
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
-
-Run:
-
-```bash
-.venv/bin/python -m pytest tests/test_crew_controller.py -v
-```
-
-Expected: FAIL because `crew_controller` does not exist.
-
-- [ ] **Step 3: Implement `CrewController.start()`**
+Append to `tests/test_cli.py`:
 
 ```python
-# src/codex_claude_orchestrator/crew_controller.py
-from __future__ import annotations
-
-from collections.abc import Callable
-from pathlib import Path
-from uuid import uuid4
-
-from codex_claude_orchestrator.blackboard import BlackboardStore
-from codex_claude_orchestrator.crew_models import (
-    ActorType,
-    BlackboardEntry,
-    BlackboardEntryType,
-    CrewRecord,
-    CrewStatus,
-    WorkerRole,
-)
-from codex_claude_orchestrator.crew_recorder import CrewRecorder
-from codex_claude_orchestrator.task_graph import TaskGraphPlanner
-from codex_claude_orchestrator.worker_pool import WorkerPool
-
-
-class CrewController:
-    def __init__(
-        self,
-        *,
-        recorder: CrewRecorder,
-        blackboard: BlackboardStore,
-        task_graph: TaskGraphPlanner,
-        worker_pool: WorkerPool,
-        crew_id_factory: Callable[[], str] | None = None,
-        entry_id_factory: Callable[[], str] | None = None,
-    ):
-        self._recorder = recorder
-        self._blackboard = blackboard
-        self._task_graph = task_graph
-        self._worker_pool = worker_pool
-        self._crew_id_factory = crew_id_factory or (lambda: f"crew-{uuid4().hex}")
-        self._entry_id_factory = entry_id_factory or (lambda: f"entry-{uuid4().hex}")
-
-    def start(self, *, repo_root: Path, goal: str, worker_roles: list[WorkerRole]) -> CrewRecord:
-        crew_id = self._crew_id_factory()
-        crew = CrewRecord(
-            crew_id=crew_id,
-            root_goal=goal,
-            repo=repo_root.resolve(),
-            status=CrewStatus.PLANNING,
-            max_workers=len(worker_roles),
-            task_graph_path=repo_root / ".orchestrator" / "crews" / crew_id / "tasks.json",
-            blackboard_path=repo_root / ".orchestrator" / "crews" / crew_id / "blackboard.jsonl",
-        )
-        self._recorder.start_crew(crew)
-        self._blackboard.append(
-            BlackboardEntry(
-                entry_id=self._entry_id_factory(),
-                crew_id=crew.crew_id,
-                task_id=None,
-                actor_type=ActorType.CODEX,
-                actor_id="codex",
-                type=BlackboardEntryType.DECISION,
-                content=f"Created crew for goal: {goal}",
-                confidence=1.0,
-            )
-        )
-        tasks = self._task_graph.default_graph(crew.crew_id, goal, worker_roles)
-        active_worker_ids: list[str] = []
-        for task in tasks:
-            worker = self._worker_pool.start_worker(repo_root=repo_root, crew=crew, task=task)
-            active_worker_ids.append(worker.worker_id)
-            tasks = self._task_graph.assign(tasks, task.task_id, worker.worker_id)
-            self._recorder.write_tasks(crew.crew_id, tasks)
-        updated = self._recorder.update_crew(
-            crew.crew_id,
-            {"status": CrewStatus.RUNNING.value, "active_worker_ids": active_worker_ids},
-        )
-        return CrewRecord(
-            crew_id=updated["crew_id"],
-            root_goal=updated["root_goal"],
-            repo=updated["repo"],
-            status=CrewStatus(updated["status"]),
-            planner_summary=updated.get("planner_summary", ""),
-            max_workers=updated.get("max_workers", len(worker_roles)),
-            active_worker_ids=updated.get("active_worker_ids", []),
-            task_graph_path=updated.get("task_graph_path", ""),
-            blackboard_path=updated.get("blackboard_path", ""),
-            verification_summary=updated.get("verification_summary", ""),
-            merge_summary=updated.get("merge_summary", ""),
-            created_at=updated["created_at"],
-            updated_at=updated["updated_at"],
-            ended_at=updated.get("ended_at"),
-            final_summary=updated.get("final_summary", ""),
-        )
-```
-
-- [ ] **Step 4: Run tests**
-
-Run:
-
-```bash
-.venv/bin/python -m pytest tests/test_crew_controller.py -v
-```
-
-Expected: PASS.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add src/codex_claude_orchestrator/crew_controller.py tests/test_crew_controller.py
-git commit -m "feat: add crew controller start flow"
-```
-
-## Task 6: Crew CLI Commands
-
-**Files:**
-- Modify: `src/codex_claude_orchestrator/cli.py`
-- Modify: `tests/test_cli.py`
-
-- [ ] **Step 1: Add failing parser and CLI tests**
-
-Append these tests to `tests/test_cli.py`:
-
-```python
-def test_build_parser_exposes_crew_commands():
+def test_build_parser_exposes_crew_start_and_worker_commands():
     from codex_claude_orchestrator.cli import build_parser
 
     parser = build_parser()
     subparsers_action = next(action for action in parser._actions if action.dest == "command")
 
     assert "crew" in subparsers_action.choices
-
-
-class FakeCrewController:
-    def __init__(self):
-        self.started = []
-
-    def start(self, **kwargs):
-        self.started.append(kwargs)
-        return type(
-            "Crew",
-            (),
-            {
-                "to_dict": lambda self: {
-                    "crew_id": "crew-cli",
-                    "root_goal": "Build V3",
-                    "status": "running",
-                    "active_worker_ids": ["worker-explorer", "worker-implementer"],
-                }
-            },
-        )()
-
-
-def test_main_crew_start_prints_json_summary(tmp_path: Path, monkeypatch):
-    repo_root = tmp_path / "repo"
-    repo_root.mkdir()
-    fake_controller = FakeCrewController()
-    monkeypatch.setattr("codex_claude_orchestrator.cli.build_crew_controller", lambda repo_root: fake_controller)
-
-    stdout = StringIO()
-    with redirect_stdout(stdout):
-        exit_code = main(
-            [
-                "crew",
-                "start",
-                "--goal",
-                "Build V3",
-                "--repo",
-                str(repo_root),
-                "--workers",
-                "explorer,implementer",
-            ]
-        )
-
-    payload = json.loads(stdout.getvalue())
-    assert exit_code == 0
-    assert payload["crew_id"] == "crew-cli"
-    assert fake_controller.started[0]["worker_roles"][0].value == "explorer"
-    assert fake_controller.started[0]["worker_roles"][1].value == "implementer"
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [ ] **Step 2: Run failing tests**
 
 Run:
 
 ```bash
-.venv/bin/python -m pytest tests/test_cli.py::test_build_parser_exposes_crew_commands tests/test_cli.py::test_main_crew_start_prints_json_summary -v
+.venv/bin/python -m pytest tests/test_crew_controller.py tests/test_cli.py::test_build_parser_exposes_crew_start_and_worker_commands -v
 ```
 
-Expected: FAIL because `crew` command and `build_crew_controller` do not exist.
+Expected: FAIL because `crew_controller` and crew CLI do not exist.
 
-- [ ] **Step 3: Modify imports in `cli.py`**
+- [ ] **Step 3: Implement `CrewController`**
 
-Add:
+Public methods:
 
-```python
-from codex_claude_orchestrator.blackboard import BlackboardStore
-from codex_claude_orchestrator.crew_controller import CrewController
-from codex_claude_orchestrator.crew_models import WorkerRole
-from codex_claude_orchestrator.crew_recorder import CrewRecorder
-from codex_claude_orchestrator.task_graph import TaskGraphPlanner
-from codex_claude_orchestrator.worker_pool import WorkerPool
+- `start(repo_root, goal, worker_roles, allow_dirty_base=False) -> CrewRecord`
+- `send_worker(repo_root, crew_id, worker_id, message) -> dict`
+- `observe_worker(repo_root, crew_id, worker_id, lines) -> dict`
+- `attach_worker(repo_root, crew_id, worker_id) -> dict`
+- `tail_worker(repo_root, crew_id, worker_id, limit) -> dict`
+- `status_worker(repo_root, crew_id, worker_id) -> dict`
+
+`start()` behavior:
+
+- Create `CrewRecord`.
+- Write initial `decision` blackboard entry.
+- Create tasks via `TaskGraphPlanner.default_graph()`.
+- Start one worker per task through `WorkerPool.start_worker(..., allow_dirty_base=allow_dirty_base)`.
+- Assign each task to its worker.
+- Persist tasks and update crew status to `running`.
+
+- [ ] **Step 4: Add CLI commands**
+
+Add top-level `crew` commands:
+
+```bash
+orchestrator crew start --repo ... --goal ... --workers explorer,implementer,reviewer [--allow-dirty-base]
+orchestrator crew status --repo ... --crew ...
+orchestrator crew blackboard --repo ... --crew ...
+orchestrator crew worker send --repo ... --crew ... --worker ... --message ...
+orchestrator crew worker observe --repo ... --crew ... --worker ... --lines 200
+orchestrator crew worker attach --repo ... --crew ... --worker ...
+orchestrator crew worker tail --repo ... --crew ... --worker ... --limit 5
+orchestrator crew worker status --repo ... --crew ... --worker ...
+orchestrator crew supervise --repo ... --crew ... --verification-command ".venv/bin/python -m pytest -q"
 ```
 
-- [ ] **Step 4: Add parser branch in `build_parser()`**
+Add helpers:
 
-Add near the other top-level commands:
+- `build_crew_controller(repo_root: Path) -> CrewController`
+- `parse_worker_roles(value: str) -> list[WorkerRole]`
 
-```python
-    crew = subparsers.add_parser("crew", help="Manage Codex-managed Claude crews")
-    crew_subparsers = crew.add_subparsers(dest="crew_command", required=True)
-    crew_start = crew_subparsers.add_parser("start", help="Start a V3 crew")
-    crew_start.add_argument("--repo", required=True)
-    crew_start.add_argument("--goal", required=True)
-    crew_start.add_argument(
-        "--workers",
-        default="explorer,implementer,reviewer",
-        help="Comma-separated worker roles such as explorer,implementer,reviewer",
-    )
-    crew_status = crew_subparsers.add_parser("status", help="Show a crew")
-    crew_status.add_argument("--repo", required=True)
-    crew_status.add_argument("--crew", required=False)
-    crew_blackboard = crew_subparsers.add_parser("blackboard", help="Show crew blackboard entries")
-    crew_blackboard.add_argument("--repo", required=True)
-    crew_blackboard.add_argument("--crew", required=False)
-```
+Route `crew worker send/observe/attach/tail/status` through `CrewController`.
 
-- [ ] **Step 5: Add builder and role parser**
-
-Add below `build_claude_bridge()`:
-
-```python
-def build_crew_controller(repo_root: Path) -> CrewController:
-    state_root = repo_root / ".orchestrator"
-    recorder = CrewRecorder(state_root)
-    blackboard = BlackboardStore(recorder)
-    return CrewController(
-        recorder=recorder,
-        blackboard=blackboard,
-        task_graph=TaskGraphPlanner(),
-        worker_pool=WorkerPool(
-            recorder=recorder,
-            blackboard=blackboard,
-            workspace_manager=WorkspaceManager(state_root),
-            bridge_factory=lambda: build_claude_bridge(repo_root),
-        ),
-    )
-
-
-def parse_worker_roles(value: str) -> list[WorkerRole]:
-    roles = [part.strip() for part in value.split(",") if part.strip()]
-    if not roles:
-        raise ValueError("at least one worker role is required")
-    return [WorkerRole(role) for role in roles]
-```
-
-- [ ] **Step 6: Route `crew` in `resolve_root_command()`**
-
-Add:
-
-```python
-        ("crew_command", "crew"),
-```
-
-- [ ] **Step 7: Route `crew` in `main()`**
-
-Add before `runs` handling:
-
-```python
-    if root_command == "crew":
-        repo_root = Path(args.repo).resolve()
-        recorder = CrewRecorder(repo_root / ".orchestrator")
-        if args.crew_command == "start":
-            crew = build_crew_controller(repo_root).start(
-                repo_root=repo_root,
-                goal=args.goal,
-                worker_roles=parse_worker_roles(args.workers),
-            )
-            print(json.dumps(crew.to_dict(), ensure_ascii=False))
-            return 0
-        if args.crew_command == "status":
-            crew_id = args.crew or recorder.latest_crew_id()
-            if not crew_id:
-                raise ValueError("no crew id provided and no latest crew exists")
-            print(json.dumps(recorder.read_crew(crew_id), ensure_ascii=False))
-            return 0
-        if args.crew_command == "blackboard":
-            crew_id = args.crew or recorder.latest_crew_id()
-            if not crew_id:
-                raise ValueError("no crew id provided and no latest crew exists")
-            print(json.dumps({"blackboard": recorder.read_crew(crew_id)["blackboard"]}, ensure_ascii=False))
-            return 0
-        raise ValueError(f"Unsupported crew command: {args.crew_command}")
-```
-
-- [ ] **Step 8: Run CLI tests**
+- [ ] **Step 5: Run tests**
 
 Run:
 
 ```bash
-.venv/bin/python -m pytest tests/test_cli.py -v
+.venv/bin/python -m pytest tests/test_crew_controller.py tests/test_cli.py -q
 ```
 
 Expected: PASS.
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add src/codex_claude_orchestrator/cli.py tests/test_cli.py
-git commit -m "feat: expose crew cli commands"
+git add src/codex_claude_orchestrator/crew_controller.py src/codex_claude_orchestrator/cli.py tests/test_crew_controller.py tests/test_cli.py
+git commit -m "feat: add crew controller and worker cli"
 ```
 
-## Task 7: Crew Verification, Challenge, And Accept
+## Task 6: Crew Verification, Challenge, And Accept
 
 **Files:**
 - Create: `src/codex_claude_orchestrator/crew_verification.py`
@@ -1458,7 +1248,7 @@ git commit -m "feat: expose crew cli commands"
 - Modify: `tests/test_crew_controller.py`
 - Modify: `tests/test_cli.py`
 
-- [ ] **Step 1: Write failing crew verification test**
+- [ ] **Step 1: Write failing verification test**
 
 ```python
 # tests/test_crew_verification.py
@@ -1475,22 +1265,20 @@ def test_crew_verification_records_command_artifacts_and_blackboard_entry(tmp_pa
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
     recorder = CrewRecorder(repo_root / ".orchestrator")
-    recorder.start_crew(CrewRecord(crew_id="crew-1", root_goal="Build V3", repo=repo_root))
-
+    recorder.start_crew(CrewRecord(crew_id="crew-1", root_goal="Build V3 MVP", repo=repo_root))
     runner = CrewVerificationRunner(
         repo_root=repo_root,
         recorder=recorder,
         policy_gate=PolicyGate(),
         command_runner=lambda argv, **kwargs: CompletedProcess(argv, 0, stdout="ok\n", stderr=""),
-        entry_id_factory=lambda: "entry-verification",
         verification_id_factory=lambda: "verification-1",
+        entry_id_factory=lambda: "entry-verification",
     )
 
     result = runner.run("crew-1", "pytest -q")
 
     details = recorder.read_crew("crew-1")
     assert result["passed"] is True
-    assert result["command"] == "pytest -q"
     assert details["blackboard"][0]["type"] == "verification"
     assert details["artifacts"] == [
         "verification/verification-1/stderr.txt",
@@ -1498,7 +1286,7 @@ def test_crew_verification_records_command_artifacts_and_blackboard_entry(tmp_pa
     ]
 ```
 
-- [ ] **Step 2: Run verification test to verify it fails**
+- [ ] **Step 2: Run failing test**
 
 Run:
 
@@ -1508,305 +1296,222 @@ Run:
 
 Expected: FAIL because `crew_verification` does not exist.
 
-- [ ] **Step 3: Implement `CrewVerificationRunner`**
+- [ ] **Step 3: Implement verification**
 
-```python
-# src/codex_claude_orchestrator/crew_verification.py
-from __future__ import annotations
+Implement `CrewVerificationRunner.run(crew_id, command)`:
 
-import shlex
-import subprocess
-from collections.abc import Callable
-from pathlib import Path
-from subprocess import CompletedProcess
-from uuid import uuid4
+- Use `shlex.split(command)`.
+- Use `PolicyGate.guard_command(argv)`.
+- Write stdout/stderr artifacts under `verification/<verification_id>/`.
+- Append `BlackboardEntry(type=VERIFICATION, actor_id="codex")`.
+- Return dict with `verification_id`, `command`, `passed`, `exit_code`, `summary`, `stdout_artifact`, `stderr_artifact`.
 
-from codex_claude_orchestrator.crew_models import ActorType, BlackboardEntry, BlackboardEntryType
-from codex_claude_orchestrator.crew_recorder import CrewRecorder
-from codex_claude_orchestrator.policy_gate import PolicyGate
+- [ ] **Step 4: Extend controller and CLI**
 
+Controller methods:
 
-CommandRunner = Callable[..., CompletedProcess[str]]
+- `verify(crew_id, command) -> dict`
+- `challenge(crew_id, summary, task_id=None) -> dict`
+- `accept(crew_id, summary) -> dict`
 
+CLI commands:
 
-class CrewVerificationRunner:
-    def __init__(
-        self,
-        *,
-        repo_root: Path,
-        recorder: CrewRecorder,
-        policy_gate: PolicyGate,
-        timeout_seconds: int = 120,
-        command_runner: CommandRunner | None = None,
-        entry_id_factory: Callable[[], str] | None = None,
-        verification_id_factory: Callable[[], str] | None = None,
-    ):
-        self._repo_root = repo_root
-        self._recorder = recorder
-        self._policy_gate = policy_gate
-        self._timeout_seconds = timeout_seconds
-        self._command_runner = command_runner or subprocess.run
-        self._entry_id_factory = entry_id_factory or (lambda: f"entry-{uuid4().hex}")
-        self._verification_id_factory = verification_id_factory or (lambda: f"verification-{uuid4().hex}")
-
-    def run(self, crew_id: str, command: str) -> dict:
-        verification_id = self._verification_id_factory()
-        stdout_name = f"verification/{verification_id}/stdout.txt"
-        stderr_name = f"verification/{verification_id}/stderr.txt"
-        argv = shlex.split(command)
-        decision = self._policy_gate.guard_command(argv)
-        if not decision.allowed:
-            reason = decision.reason or "command blocked by policy"
-            stdout_path = self._recorder.write_text_artifact(crew_id, stdout_name, "")
-            stderr_path = self._recorder.write_text_artifact(crew_id, stderr_name, f"{reason}\n")
-            payload = {
-                "verification_id": verification_id,
-                "command": command,
-                "passed": False,
-                "exit_code": None,
-                "summary": f"command blocked: {reason}",
-                "stdout_artifact": str(stdout_path),
-                "stderr_artifact": str(stderr_path),
-            }
-        else:
-            result = self._command_runner(
-                argv,
-                cwd=self._repo_root,
-                capture_output=True,
-                text=True,
-                timeout=self._timeout_seconds,
-            )
-            stdout_path = self._recorder.write_text_artifact(crew_id, stdout_name, result.stdout)
-            stderr_path = self._recorder.write_text_artifact(crew_id, stderr_name, result.stderr)
-            payload = {
-                "verification_id": verification_id,
-                "command": command,
-                "passed": result.returncode == 0,
-                "exit_code": result.returncode,
-                "summary": f"command {'passed' if result.returncode == 0 else 'failed'}: exit code {result.returncode}",
-                "stdout_artifact": str(stdout_path),
-                "stderr_artifact": str(stderr_path),
-            }
-        self._recorder.append_blackboard(
-            crew_id,
-            BlackboardEntry(
-                entry_id=self._entry_id_factory(),
-                crew_id=crew_id,
-                task_id=None,
-                actor_type=ActorType.CODEX,
-                actor_id="codex",
-                type=BlackboardEntryType.VERIFICATION,
-                content=payload["summary"],
-                evidence_refs=[payload["stdout_artifact"], payload["stderr_artifact"]],
-                confidence=1.0,
-            ),
-        )
-        return payload
+```bash
+orchestrator crew verify --repo ... --crew ... --command ...
+orchestrator crew challenge --repo ... --crew ... --task ... --summary ...
+orchestrator crew accept --repo ... --crew ... --summary ...
 ```
 
-- [ ] **Step 4: Extend `CrewController` with verify/challenge/accept**
-
-Add constructor argument:
-
-```python
-        verification_runner=None,
-```
-
-Store it as `self._verification_runner`.
-
-Add methods:
-
-```python
-    def verify(self, *, crew_id: str, command: str) -> dict:
-        if self._verification_runner is None:
-            raise ValueError("crew verification runner is not configured")
-        result = self._verification_runner.run(crew_id, command)
-        self._recorder.update_crew(crew_id, {"verification_summary": result["summary"]})
-        return result
-
-    def challenge(self, *, crew_id: str, summary: str, task_id: str | None = None) -> dict:
-        entry = BlackboardEntry(
-            entry_id=self._entry_id_factory(),
-            crew_id=crew_id,
-            task_id=task_id,
-            actor_type=ActorType.CODEX,
-            actor_id="codex",
-            type=BlackboardEntryType.RISK,
-            content=summary,
-            confidence=0.8,
-        )
-        return self._blackboard.append(entry)
-
-    def accept(self, *, crew_id: str, summary: str) -> dict:
-        self._recorder.finalize_crew(crew_id, CrewStatus.ACCEPTED, summary)
-        return self._recorder.read_crew(crew_id)["crew"]
-```
-
-- [ ] **Step 5: Add CLI parser commands**
-
-In `build_parser()`, add:
-
-```python
-    crew_verify = crew_subparsers.add_parser("verify", help="Run crew verification")
-    crew_verify.add_argument("--repo", required=True)
-    crew_verify.add_argument("--crew", required=False)
-    crew_verify.add_argument("--command", required=True)
-    crew_challenge = crew_subparsers.add_parser("challenge", help="Record a Codex crew challenge")
-    crew_challenge.add_argument("--repo", required=True)
-    crew_challenge.add_argument("--crew", required=False)
-    crew_challenge.add_argument("--task", required=False)
-    crew_challenge.add_argument("--summary", required=True)
-    crew_accept = crew_subparsers.add_parser("accept", help="Accept a crew")
-    crew_accept.add_argument("--repo", required=True)
-    crew_accept.add_argument("--crew", required=False)
-    crew_accept.add_argument("--summary", required=True)
-```
-
-- [ ] **Step 6: Wire verification runner into `build_crew_controller()`**
-
-Add imports:
-
-```python
-from codex_claude_orchestrator.crew_verification import CrewVerificationRunner
-```
-
-Pass:
-
-```python
-        verification_runner=CrewVerificationRunner(
-            repo_root=repo_root,
-            recorder=recorder,
-            policy_gate=PolicyGate(),
-        ),
-```
-
-- [ ] **Step 7: Add CLI command routing**
-
-Inside `root_command == "crew"`:
-
-```python
-        controller = build_crew_controller(repo_root)
-        if args.crew_command == "verify":
-            crew_id = args.crew or recorder.latest_crew_id()
-            if not crew_id:
-                raise ValueError("no crew id provided and no latest crew exists")
-            print(json.dumps(controller.verify(crew_id=crew_id, command=args.command), ensure_ascii=False))
-            return 0
-        if args.crew_command == "challenge":
-            crew_id = args.crew or recorder.latest_crew_id()
-            if not crew_id:
-                raise ValueError("no crew id provided and no latest crew exists")
-            print(
-                json.dumps(
-                    controller.challenge(crew_id=crew_id, task_id=args.task, summary=args.summary),
-                    ensure_ascii=False,
-                )
-            )
-            return 0
-        if args.crew_command == "accept":
-            crew_id = args.crew or recorder.latest_crew_id()
-            if not crew_id:
-                raise ValueError("no crew id provided and no latest crew exists")
-            print(json.dumps(controller.accept(crew_id=crew_id, summary=args.summary), ensure_ascii=False))
-            return 0
-```
-
-- [ ] **Step 8: Run tests**
+- [ ] **Step 5: Run tests**
 
 Run:
 
 ```bash
-.venv/bin/python -m pytest tests/test_crew_verification.py tests/test_crew_controller.py tests/test_cli.py -v
+.venv/bin/python -m pytest tests/test_crew_verification.py tests/test_crew_controller.py tests/test_cli.py -q
 ```
 
 Expected: PASS.
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add src/codex_claude_orchestrator/crew_verification.py src/codex_claude_orchestrator/crew_controller.py src/codex_claude_orchestrator/cli.py tests/test_crew_verification.py tests/test_crew_controller.py tests/test_cli.py
-git commit -m "feat: add crew verification challenge and accept"
+git commit -m "feat: add crew verification and decisions"
 ```
 
-## Task 8: Merge Arbiter
+## Task 7: WorkerChangeRecorder
+
+**Files:**
+- Create: `src/codex_claude_orchestrator/worker_change_recorder.py`
+- Modify: `src/codex_claude_orchestrator/crew_controller.py`
+- Modify: `src/codex_claude_orchestrator/cli.py`
+- Create: `tests/test_worker_change_recorder.py`
+- Modify: `tests/test_crew_controller.py`
+- Modify: `tests/test_cli.py`
+
+- [ ] **Step 1: Write failing changed-files test**
+
+```python
+# tests/test_worker_change_recorder.py
+import json
+from pathlib import Path
+
+from codex_claude_orchestrator.crew_models import CrewRecord
+from codex_claude_orchestrator.crew_recorder import CrewRecorder
+from codex_claude_orchestrator.models import WorkspaceAllocation, WorkspaceMode
+from codex_claude_orchestrator.worker_change_recorder import WorkerChangeRecorder
+
+
+class FakeWorktreeManager:
+    def __init__(self):
+        self.changed_calls = []
+
+    def changed_files(self, allocation):
+        self.changed_calls.append(allocation)
+        return ["src/app.py"]
+
+
+def test_worker_change_recorder_detects_changes_from_worktree_branch(tmp_path: Path):
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    recorder = CrewRecorder(tmp_path / ".orchestrator")
+    recorder.start_crew(CrewRecord(crew_id="crew-1", root_goal="Build V3 MVP", repo="/repo"))
+    allocation = WorkspaceAllocation(
+        workspace_id="crew-1-worker-implementer",
+        path=worktree,
+        mode=WorkspaceMode.WORKTREE,
+        writable=True,
+        branch="codex/crew-1-worker-implementer",
+        base_ref="base-sha",
+    )
+    recorder.write_text_artifact(
+        "crew-1",
+        "workers/worker-implementer/allocation.json",
+        json.dumps(allocation.to_dict(), ensure_ascii=False),
+    )
+
+    changes = WorkerChangeRecorder(recorder, worktree_manager=FakeWorktreeManager()).record_changes(
+        "crew-1", "worker-implementer", allocation
+    )
+
+    assert changes["worker_id"] == "worker-implementer"
+    assert changes["branch"] == "codex/crew-1-worker-implementer"
+    assert changes["changed_files"] == ["src/app.py"]
+    assert recorder.read_crew("crew-1")["blackboard"][0]["type"] == "patch"
+```
+
+- [ ] **Step 2: Run failing test**
+
+Run:
+
+```bash
+.venv/bin/python -m pytest tests/test_worker_change_recorder.py -v
+```
+
+Expected: FAIL because `worker_change_recorder` does not exist.
+
+- [ ] **Step 3: Implement change recorder**
+
+Implement:
+
+```python
+class WorkerChangeRecorder:
+    def __init__(
+        self,
+        recorder: CrewRecorder,
+        worktree_manager: WorktreeManager,
+        entry_id_factory: Callable[[], str] | None = None,
+    ):
+        ...
+
+    def record_changes(self, crew_id: str, worker_id: str, allocation: WorkspaceAllocation) -> dict:
+        ...
+```
+
+Implementation details:
+
+- For `WorkspaceMode.WORKTREE`, call `worktree_manager.changed_files(allocation)`.
+- For fallback `WorkspaceMode.ISOLATED`, keep snapshot comparison as a compatibility path.
+- Write `workers/<worker_id>/changes.json`.
+- Append `BlackboardEntry(type=PATCH, actor_type=WORKER, actor_id=worker_id)` with branch/base_ref evidence.
+- Return `{"crew_id": crew_id, "worker_id": worker_id, "branch": allocation.branch, "base_ref": allocation.base_ref, "changed_files": changed_files, "artifact": artifact_name}`.
+
+- [ ] **Step 4: Extend controller and CLI**
+
+Controller:
+
+- `changes(crew_id, worker_id) -> dict`
+- It reads the worker record, reads allocation artifact, reconstructs `WorkspaceAllocation`, and calls `WorkerChangeRecorder`.
+
+CLI:
+
+```bash
+orchestrator crew changes --repo ... --crew ... --worker ...
+```
+
+- [ ] **Step 5: Run tests**
+
+Run:
+
+```bash
+.venv/bin/python -m pytest tests/test_worker_change_recorder.py tests/test_crew_controller.py tests/test_cli.py -q
+```
+
+Expected: PASS.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/codex_claude_orchestrator/worker_change_recorder.py src/codex_claude_orchestrator/crew_controller.py src/codex_claude_orchestrator/cli.py tests/test_worker_change_recorder.py tests/test_crew_controller.py tests/test_cli.py
+git commit -m "feat: record crew worker changes"
+```
+
+## Task 8: Lightweight Merge Plan
 
 **Files:**
 - Create: `src/codex_claude_orchestrator/merge_arbiter.py`
-- Create: `tests/test_merge_arbiter.py`
 - Modify: `src/codex_claude_orchestrator/crew_controller.py`
+- Modify: `src/codex_claude_orchestrator/cli.py`
+- Create: `tests/test_merge_arbiter.py`
+- Modify: `tests/test_crew_controller.py`
+- Modify: `tests/test_cli.py`
 
-- [ ] **Step 1: Write failing merge arbiter tests**
+- [ ] **Step 1: Write failing merge plan tests**
 
 ```python
 # tests/test_merge_arbiter.py
-from codex_claude_orchestrator.crew_models import WorkerRecord, WorkerRole
 from codex_claude_orchestrator.merge_arbiter import MergeArbiter
-from codex_claude_orchestrator.models import WorkspaceMode
 
 
-def test_merge_arbiter_detects_overlapping_write_scopes():
-    workers = [
-        WorkerRecord(
-            worker_id="worker-a",
-            crew_id="crew-1",
-            role=WorkerRole.IMPLEMENTER,
-            agent_profile="claude",
-            bridge_id="bridge-a",
-            workspace_mode=WorkspaceMode.ISOLATED,
-            workspace_path="/tmp/a",
-            write_scope=["src/app.py"],
-        ),
-        WorkerRecord(
-            worker_id="worker-b",
-            crew_id="crew-1",
-            role=WorkerRole.COMPETITOR,
-            agent_profile="claude",
-            bridge_id="bridge-b",
-            workspace_mode=WorkspaceMode.ISOLATED,
-            workspace_path="/tmp/b",
-            write_scope=["src/app.py"],
-        ),
-    ]
-
-    plan = MergeArbiter().build_plan("crew-1", workers, changed_files_by_worker={"worker-a": ["src/app.py"], "worker-b": ["src/app.py"]})
+def test_merge_arbiter_detects_overlapping_changed_files():
+    plan = MergeArbiter().build_plan(
+        "crew-1",
+        changed_files_by_worker={
+            "worker-a": ["src/app.py"],
+            "worker-b": ["src/app.py"],
+        },
+    )
 
     assert plan["can_merge"] is False
-    assert plan["conflicts"][0]["path"] == "src/app.py"
+    assert plan["conflicts"] == [{"path": "src/app.py", "workers": ["worker-a", "worker-b"]}]
     assert plan["recommendation"] == "requires_codex_decision"
 
 
-def test_merge_arbiter_allows_non_overlapping_scopes():
-    workers = [
-        WorkerRecord(
-            worker_id="worker-a",
-            crew_id="crew-1",
-            role=WorkerRole.IMPLEMENTER,
-            agent_profile="claude",
-            bridge_id="bridge-a",
-            workspace_mode=WorkspaceMode.ISOLATED,
-            workspace_path="/tmp/a",
-            write_scope=["src/app.py"],
-        ),
-        WorkerRecord(
-            worker_id="worker-b",
-            crew_id="crew-1",
-            role=WorkerRole.IMPLEMENTER,
-            agent_profile="claude",
-            bridge_id="bridge-b",
-            workspace_mode=WorkspaceMode.ISOLATED,
-            workspace_path="/tmp/b",
-            write_scope=["tests/test_app.py"],
-        ),
-    ]
-
-    plan = MergeArbiter().build_plan("crew-1", workers, changed_files_by_worker={"worker-a": ["src/app.py"], "worker-b": ["tests/test_app.py"]})
+def test_merge_arbiter_allows_non_overlapping_changed_files():
+    plan = MergeArbiter().build_plan(
+        "crew-1",
+        changed_files_by_worker={
+            "worker-a": ["src/app.py"],
+            "worker-b": ["tests/test_app.py"],
+        },
+    )
 
     assert plan["can_merge"] is True
     assert plan["conflicts"] == []
     assert plan["recommendation"] == "ready_for_codex_review"
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [ ] **Step 2: Run failing tests**
 
 Run:
 
@@ -1816,290 +1521,59 @@ Run:
 
 Expected: FAIL because `merge_arbiter` does not exist.
 
-- [ ] **Step 3: Implement `MergeArbiter`**
+- [ ] **Step 3: Implement merge arbiter**
 
-```python
-# src/codex_claude_orchestrator/merge_arbiter.py
-from __future__ import annotations
+Implement `MergeArbiter.build_plan(crew_id, changed_files_by_worker)`:
 
-from codex_claude_orchestrator.crew_models import WorkerRecord
+- Build path -> worker owners map.
+- Conflict if one path is changed by more than one worker.
+- Return `crew_id`, `can_merge`, `conflicts`, `changed_files_by_worker`, `recommendation`.
 
+- [ ] **Step 4: Extend controller and CLI**
 
-class MergeArbiter:
-    def build_plan(
-        self,
-        crew_id: str,
-        workers: list[WorkerRecord],
-        *,
-        changed_files_by_worker: dict[str, list[str]],
-    ) -> dict:
-        path_owners: dict[str, list[str]] = {}
-        for worker in workers:
-            for path in changed_files_by_worker.get(worker.worker_id, []):
-                path_owners.setdefault(path, []).append(worker.worker_id)
+Controller:
 
-        conflicts = [
-            {"path": path, "workers": owners}
-            for path, owners in sorted(path_owners.items())
-            if len(set(owners)) > 1
-        ]
-        can_merge = len(conflicts) == 0
-        return {
-            "crew_id": crew_id,
-            "can_merge": can_merge,
-            "conflicts": conflicts,
-            "changed_files_by_worker": changed_files_by_worker,
-            "recommendation": "ready_for_codex_review" if can_merge else "requires_codex_decision",
-        }
+- `merge_plan(crew_id) -> dict`
+- Read `workers/<worker_id>/changes.json` artifacts when present.
+- Generate plan with `MergeArbiter`.
+- Update `crew.merge_summary`.
+- Write `merge_plan.json` artifact.
+
+CLI:
+
+```bash
+orchestrator crew merge-plan --repo ... --crew ...
 ```
 
-- [ ] **Step 4: Add `CrewController.merge_plan()`**
-
-Add constructor argument:
-
-```python
-        merge_arbiter=None,
-```
-
-Store it as `self._merge_arbiter`.
-
-Add method:
-
-```python
-    def merge_plan(self, *, crew_id: str, changed_files_by_worker: dict[str, list[str]] | None = None) -> dict:
-        if self._merge_arbiter is None:
-            raise ValueError("crew merge arbiter is not configured")
-        details = self._recorder.read_crew(crew_id)
-        workers = [
-            WorkerRecord(
-                worker_id=item["worker_id"],
-                crew_id=item["crew_id"],
-                role=WorkerRole(item["role"]),
-                agent_profile=item["agent_profile"],
-                bridge_id=item.get("bridge_id"),
-                workspace_mode=WorkspaceMode(item["workspace_mode"]),
-                workspace_path=item["workspace_path"],
-                write_scope=item.get("write_scope", []),
-                allowed_tools=item.get("allowed_tools", []),
-            )
-            for item in details["workers"]
-        ]
-        plan = self._merge_arbiter.build_plan(crew_id, workers, changed_files_by_worker=changed_files_by_worker or {})
-        self._recorder.update_crew(crew_id, {"merge_summary": plan["recommendation"]})
-        return plan
-```
-
-Add imports:
-
-```python
-from codex_claude_orchestrator.crew_models import WorkerRecord
-from codex_claude_orchestrator.models import WorkspaceMode
-```
-
-- [ ] **Step 5: Wire `MergeArbiter` in CLI builder and add CLI command**
-
-In `cli.py`, import:
-
-```python
-from codex_claude_orchestrator.merge_arbiter import MergeArbiter
-```
-
-Pass into `CrewController`:
-
-```python
-        merge_arbiter=MergeArbiter(),
-```
-
-Add parser:
-
-```python
-    crew_merge_plan = crew_subparsers.add_parser("merge-plan", help="Build a crew merge plan")
-    crew_merge_plan.add_argument("--repo", required=True)
-    crew_merge_plan.add_argument("--crew", required=False)
-```
-
-Add route:
-
-```python
-        if args.crew_command == "merge-plan":
-            crew_id = args.crew or recorder.latest_crew_id()
-            if not crew_id:
-                raise ValueError("no crew id provided and no latest crew exists")
-            print(json.dumps(controller.merge_plan(crew_id=crew_id), ensure_ascii=False))
-            return 0
-```
-
-- [ ] **Step 6: Run tests**
+- [ ] **Step 5: Run tests**
 
 Run:
 
 ```bash
-.venv/bin/python -m pytest tests/test_merge_arbiter.py tests/test_crew_controller.py tests/test_cli.py -v
+.venv/bin/python -m pytest tests/test_merge_arbiter.py tests/test_crew_controller.py tests/test_cli.py -q
 ```
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add src/codex_claude_orchestrator/merge_arbiter.py src/codex_claude_orchestrator/crew_controller.py src/codex_claude_orchestrator/cli.py tests/test_merge_arbiter.py tests/test_crew_controller.py tests/test_cli.py
-git commit -m "feat: add crew merge arbitration"
+git commit -m "feat: add crew merge plan"
 ```
 
-## Task 9: UI Crew Visibility
-
-**Files:**
-- Modify: `src/codex_claude_orchestrator/ui_server.py`
-- Modify: `tests/test_ui_server.py`
-
-- [ ] **Step 1: Add failing UI tests**
-
-Append to `tests/test_ui_server.py`:
-
-```python
-from codex_claude_orchestrator.crew_models import CrewRecord
-from codex_claude_orchestrator.crew_recorder import CrewRecorder
-
-
-def test_build_ui_state_includes_crews(tmp_path: Path):
-    repo_root = tmp_path / "repo"
-    repo_root.mkdir()
-    CrewRecorder(repo_root / ".orchestrator").start_crew(
-        CrewRecord(crew_id="crew-ui", root_goal="Show crew", repo=repo_root)
-    )
-
-    state = build_ui_state(repo_root)
-
-    assert state["crews"][0]["crew_id"] == "crew-ui"
-
-
-def test_ui_routes_serve_crew_details(tmp_path: Path):
-    repo_root = tmp_path / "repo"
-    repo_root.mkdir()
-    CrewRecorder(repo_root / ".orchestrator").start_crew(
-        CrewRecord(crew_id="crew-ui", root_goal="Show crew", repo=repo_root)
-    )
-
-    content_type, body = resolve_ui_request(repo_root, "/api/crews/crew-ui")
-    payload = json.loads(body)
-
-    assert content_type == "application/json; charset=utf-8"
-    assert payload["crew"]["crew_id"] == "crew-ui"
-
-
-def test_render_index_html_contains_crew_surface(tmp_path: Path):
-    html = render_index_html(tmp_path)
-
-    assert "Crews" in html
-    assert "Blackboard" in html
-```
-
-- [ ] **Step 2: Run tests to verify they fail**
-
-Run:
-
-```bash
-.venv/bin/python -m pytest tests/test_ui_server.py::test_build_ui_state_includes_crews tests/test_ui_server.py::test_ui_routes_serve_crew_details tests/test_ui_server.py::test_render_index_html_contains_crew_surface -v
-```
-
-Expected: FAIL because UI does not include crews.
-
-- [ ] **Step 3: Modify `ui_server.py` imports and state**
-
-Add import:
-
-```python
-from codex_claude_orchestrator.crew_recorder import CrewRecorder
-```
-
-Modify `build_ui_state()`:
-
-```python
-    return {
-        "repo": str(repo_root),
-        "crews": CrewRecorder(state_root).list_crews(),
-        "sessions": SessionRecorder(state_root).list_sessions(),
-        "runs": RunRecorder(state_root).list_runs(),
-        "skills": SkillEvolution(state_root).list_skills(),
-    }
-```
-
-- [ ] **Step 4: Add `/api/crews/<crew_id>` route**
-
-In `resolve_ui_request()`:
-
-```python
-    crew_recorder = CrewRecorder(state_root)
-```
-
-Add before sessions route:
-
-```python
-    if path.startswith("/api/crews/"):
-        crew_id = _safe_resource_id(path.removeprefix("/api/crews/"))
-        return "application/json; charset=utf-8", _json(crew_recorder.read_crew(crew_id))
-```
-
-- [ ] **Step 5: Update HTML labels minimally**
-
-In `render_index_html()`, change the title from `Orchestrator V2 Console` to:
-
-```html
-<title>Orchestrator Console</title>
-```
-
-Update visible heading and panes so these strings exist:
-
-```html
-<h1>Orchestrator Console</h1>
-```
-
-Add a crew section label near the existing session list:
-
-```html
-<div class="pane-head">Crews</div>
-```
-
-Add a details label in the main content area:
-
-```html
-<h2>Blackboard</h2>
-```
-
-Keep existing session/run/skill labels so old tests can be updated deliberately in the same step.
-
-- [ ] **Step 6: Update older UI tests that assert old title**
-
-Replace assertions expecting `"Orchestrator V2 Console"` with `"Orchestrator Console"`.
-
-- [ ] **Step 7: Run UI tests**
-
-Run:
-
-```bash
-.venv/bin/python -m pytest tests/test_ui_server.py -v
-```
-
-Expected: PASS.
-
-- [ ] **Step 8: Commit**
-
-```bash
-git add src/codex_claude_orchestrator/ui_server.py tests/test_ui_server.py
-git commit -m "feat: show crews in orchestrator ui"
-```
-
-## Task 10: End-To-End Fake Crew Flow And Regression
+## Task 9: End-To-End Fake Flow And Regression
 
 **Files:**
 - Modify: `tests/test_crew_controller.py`
+- Modify: `tests/test_cli.py` only if CLI regressions require assertion updates
 
-- [ ] **Step 1: Add an end-to-end fake crew flow test**
+- [ ] **Step 1: Add fake end-to-end controller test**
 
 Append to `tests/test_crew_controller.py`:
 
 ```python
-def test_crew_controller_fake_flow_start_verify_challenge_accept(tmp_path: Path):
+def test_crew_controller_fake_flow_start_send_verify_challenge_accept(tmp_path: Path):
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
     recorder = CrewRecorder(repo_root / ".orchestrator")
@@ -2107,7 +1581,12 @@ def test_crew_controller_fake_flow_start_verify_challenge_accept(tmp_path: Path)
 
     class FakeVerificationRunner:
         def run(self, crew_id, command):
-            return {"verification_id": "verification-1", "command": command, "passed": True, "summary": "command passed: exit code 0"}
+            return {
+                "verification_id": "verification-1",
+                "command": command,
+                "passed": True,
+                "summary": "command passed: exit code 0",
+            }
 
     controller = CrewController(
         recorder=recorder,
@@ -2119,48 +1598,39 @@ def test_crew_controller_fake_flow_start_verify_challenge_accept(tmp_path: Path)
         entry_id_factory=lambda: "entry-flow",
     )
 
-    crew = controller.start(repo_root=repo_root, goal="Build V3", worker_roles=[WorkerRole.EXPLORER])
+    crew = controller.start(repo_root=repo_root, goal="Build V3 MVP", worker_roles=[WorkerRole.EXPLORER])
+    sent = controller.send_worker(repo_root=repo_root, crew_id=crew.crew_id, worker_id="worker-explorer", message="continue")
     verification = controller.verify(crew_id=crew.crew_id, command="pytest -q")
     challenge = controller.challenge(crew_id=crew.crew_id, summary="Need more evidence", task_id="task-explorer")
     accepted = controller.accept(crew_id=crew.crew_id, summary="accepted with evidence")
 
+    assert sent["marker_seen"] is True
     assert verification["passed"] is True
     assert challenge["type"] == "risk"
     assert accepted["status"] == "accepted"
-    assert recorder.read_crew("crew-1")["final_report"]["final_summary"] == "accepted with evidence"
 ```
 
-- [ ] **Step 2: Run the fake flow test**
+- [ ] **Step 2: Run V3 focused tests**
 
 Run:
 
 ```bash
-.venv/bin/python -m pytest tests/test_crew_controller.py::test_crew_controller_fake_flow_start_verify_challenge_accept -v
+.venv/bin/python -m pytest tests/test_crew_models.py tests/test_crew_recorder.py tests/test_blackboard.py tests/test_task_graph.py tests/test_worktree_manager.py tests/test_native_claude_session.py tests/test_worker_pool.py tests/test_crew_controller.py tests/test_crew_verification.py tests/test_worker_change_recorder.py tests/test_merge_arbiter.py -q
 ```
 
 Expected: PASS.
 
-- [ ] **Step 3: Run all V3-focused tests**
+- [ ] **Step 3: Run V1/V2 regression tests**
 
 Run:
 
 ```bash
-.venv/bin/python -m pytest tests/test_crew_models.py tests/test_crew_recorder.py tests/test_blackboard.py tests/test_task_graph.py tests/test_worker_pool.py tests/test_crew_controller.py tests/test_crew_verification.py tests/test_merge_arbiter.py -q
+.venv/bin/python -m pytest tests/test_supervisor.py tests/test_session_engine.py tests/test_claude_bridge.py tests/test_cli.py tests/test_workspace_manager.py tests/test_policy_gate.py -q
 ```
 
 Expected: PASS.
 
-- [ ] **Step 4: Run V1/V2 regression tests**
-
-Run:
-
-```bash
-.venv/bin/python -m pytest tests/test_supervisor.py tests/test_session_engine.py tests/test_claude_bridge.py tests/test_cli.py tests/test_ui_server.py -q
-```
-
-Expected: PASS.
-
-- [ ] **Step 5: Run full test suite**
+- [ ] **Step 4: Run full suite**
 
 Run:
 
@@ -2170,23 +1640,27 @@ Run:
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit final flow/regression test adjustments**
+- [ ] **Step 5: Commit final regression test**
 
 ```bash
-git add tests/test_crew_controller.py
-git commit -m "test: cover crew v3 end to end flow"
+git add tests/test_crew_controller.py tests/test_cli.py
+git commit -m "test: cover crew v3 mvp flow"
 ```
 
 ## Manual Smoke Test
 
-After all tasks pass, run a dry fake-friendly manual check on a small repo where invoking real Claude is acceptable:
+Use a small disposable repo before running against real work:
 
 ```bash
-.venv/bin/orchestrator crew start --repo /path/to/repo --goal "Inspect this repo and propose one safe improvement" --workers explorer
-.venv/bin/orchestrator crew status --repo /path/to/repo
-.venv/bin/orchestrator crew blackboard --repo /path/to/repo
-.venv/bin/orchestrator crew verify --repo /path/to/repo --command ".venv/bin/python -m pytest -q"
-.venv/bin/orchestrator crew accept --repo /path/to/repo --summary "accepted after verification"
+.venv/bin/orchestrator crew start --repo /path/to/repo --goal "Inspect this repo and propose one safe improvement" --workers explorer,implementer
+.venv/bin/orchestrator crew status --repo /path/to/repo --crew <crew_id>
+.venv/bin/orchestrator crew worker observe --repo /path/to/repo --crew <crew_id> --worker worker-explorer
+.venv/bin/orchestrator crew worker attach --repo /path/to/repo --crew <crew_id> --worker worker-explorer
+.venv/bin/orchestrator crew worker tail --repo /path/to/repo --crew <crew_id> --worker worker-explorer
+.venv/bin/orchestrator crew worker send --repo /path/to/repo --crew <crew_id> --worker worker-explorer --message "Summarize the highest-confidence finding"
+.venv/bin/orchestrator crew blackboard --repo /path/to/repo --crew <crew_id>
+.venv/bin/orchestrator crew verify --repo /path/to/repo --crew <crew_id> --command ".venv/bin/python -m pytest -q"
+.venv/bin/orchestrator crew accept --repo /path/to/repo --crew <crew_id> --summary "accepted after verification"
 ```
 
 Expected:
@@ -2194,20 +1668,35 @@ Expected:
 - `.orchestrator/crews/<crew_id>/crew.json` exists.
 - `.orchestrator/crews/<crew_id>/tasks.json` exists.
 - `.orchestrator/crews/<crew_id>/workers.jsonl` exists.
-- `.orchestrator/crews/<crew_id>/blackboard.jsonl` contains decision and verification entries.
-- `crew status` returns JSON with `crew`, `tasks`, `workers`, `blackboard`, `final_report`, and `artifacts`.
+- `.orchestrator/crews/<crew_id>/blackboard.jsonl` contains decision, claim, and verification entries.
+- `git worktree list` shows a worker worktree for the implementer.
+- The implementer worker record has `workspace_mode=worktree`, `branch`, and `base_ref` in its allocation artifact.
+- `crew worker observe` returns the current native Claude terminal pane snapshot.
+- `crew worker attach` prints or executes `tmux attach -t <terminal_session>`.
+- `crew worker tail` returns the worker transcript lines.
+- `crew status` returns `crew`, `tasks`, `workers`, `blackboard`, `final_report`, and `artifacts`.
+
+## Deferred V3 Work
+
+These are deliberately outside the MVP:
+
+- Competitor worker and A/B implementation comparison.
+- Independent verifier worker.
+- Dynamic worker add/stop.
+- UI crew timeline and blackboard visualization.
+- Automatic patch apply or merge.
+- Cross-worker direct messaging.
 
 ## Spec Coverage Checklist
 
-- Version boundary V1/V2/V3: covered by Tasks 4-6 without changing existing V1/V2 entrypoints.
-- Crew record: covered by Tasks 1-2.
-- Worker roles: covered by Tasks 1, 3, and 4.
-- TaskGraph: covered by Task 3.
-- Blackboard: covered by Task 2.
-- WorkerPool over ClaudeBridge: covered by Task 4.
-- CrewController orchestration: covered by Task 5.
-- Verification/challenge/accept: covered by Task 7.
-- MergeArbiter: covered by Task 8.
-- CLI/UX: covered by Task 6 and Task 7.
-- UI visibility: covered by Task 9.
-- Regression protection: covered by Task 10.
+- V1/V2 compatibility: covered by Task 9 regression tests.
+- Crew records: Task 1 and Task 2.
+- Worker roles and lifecycle: Task 1 and Task 4.
+- Git worktree allocation and dirty base handling: Task 1 and Task 4.
+- Task graph: Task 3.
+- Blackboard: Task 2.
+- Worker send/observe/attach/tail/status: Task 4, Task 5, CLI in Task 5.
+- Verification/challenge/accept: Task 6.
+- Changed files: Task 7.
+- Merge plan: Task 8.
+- UI: deferred by design, not part of V3 MVP.

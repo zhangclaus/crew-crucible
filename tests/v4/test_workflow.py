@@ -1,12 +1,20 @@
 from pathlib import Path
+from typing import get_type_hints
 
 from codex_claude_orchestrator.crew.gates import GateResult
 from codex_claude_orchestrator.crew.readiness import ReadinessReport
 from codex_claude_orchestrator.crew.review_verdict import ReviewVerdict
 from codex_claude_orchestrator.v4.event_store import SQLiteEventStore
+from codex_claude_orchestrator.v4.event_store_protocol import EventStore
 from codex_claude_orchestrator.v4.events import AgentEvent
 from codex_claude_orchestrator.v4.gates import GateEventBuilder
 from codex_claude_orchestrator.v4.workflow import V4WorkflowEngine
+
+
+def test_gate_event_builder_depends_on_event_store_protocol():
+    annotation = get_type_hints(GateEventBuilder.__init__)["event_store"]
+
+    assert annotation == EventStore | None
 
 
 def test_gate_event_builder_builds_scope_event_payload():

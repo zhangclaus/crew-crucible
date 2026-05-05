@@ -72,6 +72,7 @@ class OutboxWatcher:
                 "changed_files": result.changed_files,
                 "artifact_refs": result.artifact_refs,
                 "verification": result.verification,
+                "review": result.review,
                 "acknowledged_message_ids": result.acknowledged_message_ids,
                 "validation_errors": validation_errors,
             }
@@ -96,6 +97,7 @@ class MarkerDetector:
         text: str,
         expected_marker: str,
         source: str = "transcript",
+        artifact_refs: list[str] | None = None,
     ):
         if expected_marker and expected_marker in text:
             yield RuntimeEvent(
@@ -103,6 +105,7 @@ class MarkerDetector:
                 turn_id=turn_id,
                 worker_id=worker_id,
                 payload={"marker": expected_marker, "source": source},
+                artifact_refs=list(artifact_refs or []),
             )
 
 
