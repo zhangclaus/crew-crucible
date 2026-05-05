@@ -206,3 +206,25 @@ def test_run_executes_spawn_decision_when_verify_passes():
         ))
 
     controller.ensure_worker.assert_called_once()
+
+
+def test_crew_decision_only_registers_accept_and_challenge():
+    """crew_decision should only register crew_accept and crew_challenge tools."""
+    from unittest.mock import MagicMock
+    from codex_claude_orchestrator.mcp_server.tools.crew_decision import register_decision_tools
+
+    mock_server = MagicMock()
+    registered_tools = {}
+    def mock_tool(name):
+        def decorator(fn):
+            registered_tools[name] = fn
+            return fn
+        return decorator
+    mock_server.tool = mock_tool
+
+    register_decision_tools(mock_server, MagicMock())
+
+    assert "crew_accept" in registered_tools
+    assert "crew_challenge" in registered_tools
+    assert "crew_decide" not in registered_tools
+    assert "crew_spawn" not in registered_tools

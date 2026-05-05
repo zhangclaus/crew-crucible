@@ -19,10 +19,10 @@ def test_decision_tools_registered():
     server = FakeServer()
     controller = MagicMock()
     register_decision_tools(server, controller)
-    assert "crew_decide" in server.tools
     assert "crew_accept" in server.tools
     assert "crew_challenge" in server.tools
-    assert "crew_spawn" in server.tools
+    assert "crew_decide" not in server.tools
+    assert "crew_spawn" not in server.tools
 
 
 def test_crew_accept():
