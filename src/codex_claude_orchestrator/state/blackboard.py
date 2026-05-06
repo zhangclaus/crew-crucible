@@ -2,14 +2,21 @@ from __future__ import annotations
 
 from codex_claude_orchestrator.crew.models import BlackboardEntry, BlackboardEntryType
 from codex_claude_orchestrator.state.crew_recorder import CrewRecorder
+from codex_claude_orchestrator.v4.domain_events import DomainEventEmitter
 
 
 class BlackboardStore:
-    def __init__(self, recorder: CrewRecorder):
+    def __init__(self, recorder: CrewRecorder, *, event_store=None):
         self._recorder = recorder
+        self._domain_events = DomainEventEmitter(event_store) if event_store else None
 
     def append(self, entry: BlackboardEntry) -> None:
         self._recorder.append_blackboard(entry.crew_id, entry)
+        if self._domain_events:
+            entry_type = entry.type.value if hasattr(entry.type, "value") else str(entry.type)
+            self._domain_events.emit_blackboard_entry(
+                entry.crew_id, entry.entry_id, entry_type, entry.content,
+            )
 
     def list_entries(
         self,

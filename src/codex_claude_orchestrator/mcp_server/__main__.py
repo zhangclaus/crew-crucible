@@ -14,11 +14,13 @@ def _build_controller():
     from codex_claude_orchestrator.runtime.native_claude_session import NativeClaudeSession
     from codex_claude_orchestrator.crew.task_graph import TaskGraphPlanner
     from codex_claude_orchestrator.workspace.worktree_manager import WorktreeManager
+    from codex_claude_orchestrator.v4.event_store_factory import build_v4_event_store
 
     repo = Path(os.environ.get("CREW_REPO", "."))
     state_root = repo / ".orchestrator"
     recorder = CrewRecorder(state_root)
-    blackboard = BlackboardStore(recorder)
+    event_store = build_v4_event_store(repo, readonly=False)
+    blackboard = BlackboardStore(recorder, event_store=event_store)
     session = NativeClaudeSession()
     worktree_manager = WorktreeManager(state_root)
     pool = WorkerPool(
@@ -26,12 +28,14 @@ def _build_controller():
         blackboard=blackboard,
         worktree_manager=worktree_manager,
         native_session=session,
+        event_store=event_store,
     )
     controller = CrewController(
         recorder=recorder,
         blackboard=blackboard,
         worker_pool=pool,
         task_graph=TaskGraphPlanner(),
+        event_store=event_store,
     )
     return controller
 

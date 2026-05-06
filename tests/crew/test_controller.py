@@ -511,3 +511,236 @@ def test_controller_resume_context_collects_snapshot_and_replay_inputs(tmp_path:
     assert context["decisions"][0]["action_type"] == "accept_ready"
     assert context["known_pitfalls"][0]["failure_class"] == "verification_repeat"
     assert context["resume_hint"] == "Replay decisions, protocol requests, and blackboard before sending the next worker turn."
+
+
+# ---------------------------------------------------------------------------
+# Dual-write tests: EventStore integration
+# ---------------------------------------------------------------------------
+
+
+class FakeEventStore:
+    """In-memory event store for testing dual-write behavior."""
+
+    def __init__(self):
+        self.events: list[dict] = []
+
+    def append(self, *, stream_id, type: str, crew_id="", worker_id="", **kwargs):
+        event = {
+            "stream_id": stream_id,
+            "type": type,
+            "crew_id": crew_id,
+            "worker_id": worker_id,
+            "idempotency_key": kwargs.get("idempotency_key", ""),
+            "payload": kwargs.get("payload"),
+        }
+        self.events.append(event)
+        return event
+
+    def append_claim(self, **kwargs):
+        return self.append(**kwargs), True
+
+    def list_stream(self, stream_id, after_sequence=0):
+        return [e for e in self.events if e["stream_id"] == stream_id]
+
+    def list_by_turn(self, turn_id):
+        return []
+
+    def list_all(self):
+        return list(self.events)
+
+    def get_by_idempotency_key(self, key):
+        for e in self.events:
+            if e["idempotency_key"] == key:
+                return e
+        return None
+
+    def health(self):
+        return {"backend": "fake", "ok": True}
+
+
+def test_controller_start_emits_crew_started_event(tmp_path: Path):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    recorder = CrewRecorder(repo_root / ".orchestrator")
+    event_store = FakeEventStore()
+    controller = CrewController(
+        recorder=recorder,
+        blackboard=BlackboardStore(recorder, event_store=event_store),
+        task_graph=TaskGraphPlanner(task_id_factory=lambda role: f"task-{role.value}"),
+        worker_pool=FakeWorkerPool(),
+        crew_id_factory=lambda: "crew-1",
+        entry_id_factory=lambda: "entry-1",
+        event_store=event_store,
+    )
+
+    crew = controller.start(
+        repo_root=repo_root,
+        goal="Build V3 MVP",
+        worker_roles=[WorkerRole.EXPLORER],
+    )
+
+    crew_events = [e for e in event_store.events if e["type"] == "crew.started"]
+    assert len(crew_events) == 1
+    assert crew_events[0]["crew_id"] == "crew-1"
+    assert crew_events[0]["payload"]["goal"] == "Build V3 MVP"
+
+
+def test_controller_start_dynamic_emits_crew_started_event(tmp_path: Path):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    recorder = CrewRecorder(repo_root / ".orchestrator")
+    event_store = FakeEventStore()
+    controller = CrewController(
+        recorder=recorder,
+        blackboard=BlackboardStore(recorder, event_store=event_store),
+        task_graph=TaskGraphPlanner(),
+        worker_pool=FakeWorkerPool(),
+        crew_id_factory=lambda: "crew-1",
+        entry_id_factory=lambda: "entry-1",
+        event_store=event_store,
+    )
+
+    crew = controller.start_dynamic(repo_root=repo_root, goal="Fix failing tests")
+
+    crew_events = [e for e in event_store.events if e["type"] == "crew.started"]
+    assert len(crew_events) == 1
+    assert crew_events[0]["crew_id"] == "crew-1"
+    assert crew_events[0]["payload"]["goal"] == "Fix failing tests"
+
+
+def test_controller_stop_emits_crew_stopped_event(tmp_path: Path):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    recorder = CrewRecorder(repo_root / ".orchestrator")
+    event_store = FakeEventStore()
+    controller = CrewController(
+        recorder=recorder,
+        blackboard=BlackboardStore(recorder, event_store=event_store),
+        task_graph=TaskGraphPlanner(task_id_factory=lambda role: f"task-{role.value}"),
+        worker_pool=FakeWorkerPool(),
+        crew_id_factory=lambda: "crew-1",
+        entry_id_factory=lambda: "entry-1",
+        event_store=event_store,
+    )
+    crew = controller.start_dynamic(repo_root=repo_root, goal="Test stop")
+
+    controller.stop(repo_root=repo_root, crew_id=crew.crew_id)
+
+    stopped_events = [e for e in event_store.events if e["type"] == "crew.stopped"]
+    assert len(stopped_events) == 1
+    assert stopped_events[0]["crew_id"] == "crew-1"
+    assert stopped_events[0]["payload"]["reason"] == "crew stopped by Codex"
+
+
+def test_controller_accept_emits_crew_finalized_event(tmp_path: Path):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    recorder = CrewRecorder(repo_root / ".orchestrator")
+    event_store = FakeEventStore()
+    controller = CrewController(
+        recorder=recorder,
+        blackboard=BlackboardStore(recorder, event_store=event_store),
+        task_graph=TaskGraphPlanner(task_id_factory=lambda role: f"task-{role.value}"),
+        worker_pool=FakeWorkerPool(),
+        crew_id_factory=lambda: "crew-1",
+        entry_id_factory=lambda: "entry-1",
+        event_store=event_store,
+    )
+    crew = controller.start_dynamic(repo_root=repo_root, goal="Test accept")
+
+    controller.accept(crew_id=crew.crew_id, summary="All tests pass")
+
+    finalized_events = [e for e in event_store.events if e["type"] == "crew.finalized"]
+    assert len(finalized_events) == 1
+    assert finalized_events[0]["crew_id"] == "crew-1"
+    assert finalized_events[0]["payload"]["status"] == "accepted"
+    assert finalized_events[0]["payload"]["final_summary"] == "All tests pass"
+
+
+def test_controller_record_decision_emits_decision_recorded_event(tmp_path: Path):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    recorder = CrewRecorder(repo_root / ".orchestrator")
+    event_store = FakeEventStore()
+    controller = CrewController(
+        recorder=recorder,
+        blackboard=BlackboardStore(recorder, event_store=event_store),
+        task_graph=TaskGraphPlanner(),
+        worker_pool=FakeWorkerPool(),
+        crew_id_factory=lambda: "crew-1",
+        entry_id_factory=lambda: "entry-1",
+        event_store=event_store,
+    )
+    crew = controller.start_dynamic(repo_root=repo_root, goal="Test decisions")
+    action = DecisionAction(
+        action_id="decision-1",
+        crew_id=crew.crew_id,
+        action_type=DecisionActionType.ACCEPT_READY,
+        reason="verification passed",
+    )
+
+    controller.record_decision(crew_id=crew.crew_id, action=action)
+
+    decision_events = [e for e in event_store.events if e["type"] == "decision.recorded"]
+    assert len(decision_events) == 1
+    assert decision_events[0]["crew_id"] == "crew-1"
+    assert decision_events[0]["idempotency_key"] == "crew-1/decision/decision-1"
+    assert decision_events[0]["payload"]["action_type"] == "accept_ready"
+    assert decision_events[0]["payload"]["reason"] == "verification passed"
+
+
+def test_controller_challenge_emits_blackboard_entry_event(tmp_path: Path):
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    recorder = CrewRecorder(repo_root / ".orchestrator")
+    event_store = FakeEventStore()
+    controller = CrewController(
+        recorder=recorder,
+        blackboard=BlackboardStore(recorder, event_store=event_store),
+        task_graph=TaskGraphPlanner(),
+        worker_pool=FakeWorkerPool(),
+        crew_id_factory=lambda: "crew-1",
+        entry_id_factory=lambda: "entry-1",
+        event_store=event_store,
+    )
+    crew = controller.start_dynamic(repo_root=repo_root, goal="Test challenge")
+
+    controller.challenge(crew_id=crew.crew_id, summary="Need more evidence")
+
+    bb_events = [e for e in event_store.events if e["type"] == "blackboard.entry"]
+    # One from start_dynamic initial decision, one from challenge
+    assert len(bb_events) == 2
+    risk_events = [e for e in bb_events if e["payload"].get("entry_type") == "risk"]
+    assert len(risk_events) == 1
+    assert risk_events[0]["crew_id"] == "crew-1"
+    assert risk_events[0]["payload"]["content"] == "Need more evidence"
+
+
+def test_controller_works_without_event_store(tmp_path: Path):
+    """Verify no crash when event_store=None (backward compatibility)."""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    recorder = CrewRecorder(repo_root / ".orchestrator")
+    controller = CrewController(
+        recorder=recorder,
+        blackboard=BlackboardStore(recorder),
+        task_graph=TaskGraphPlanner(task_id_factory=lambda role: f"task-{role.value}"),
+        worker_pool=FakeWorkerPool(),
+        crew_id_factory=lambda: "crew-1",
+        entry_id_factory=lambda: "entry-1",
+    )
+
+    crew = controller.start_dynamic(repo_root=repo_root, goal="No event store")
+    controller.record_decision(
+        crew_id=crew.crew_id,
+        action=DecisionAction(
+            action_id="decision-1",
+            crew_id=crew.crew_id,
+            action_type=DecisionActionType.ACCEPT_READY,
+            reason="ok",
+        ),
+    )
+    controller.stop(repo_root=repo_root, crew_id=crew.crew_id)
+
+    # No assertion needed — just verify no exceptions were raised
+    assert crew.crew_id == "crew-1"

@@ -33,6 +33,7 @@ from codex_claude_orchestrator.runtime.native_claude_session import NativeClaude
 from codex_claude_orchestrator.messaging.protocol_requests import ProtocolRequestStore
 from codex_claude_orchestrator.workspace.worktree_manager import WorktreeManager
 from codex_claude_orchestrator.crew.scope import scope_covers_all as _scope_covers_all
+from codex_claude_orchestrator.v4.domain_events import DomainEventEmitter
 
 
 class WorkerPool:
@@ -49,6 +50,7 @@ class WorkerPool:
         message_id_factory: Callable[[], str] | None = None,
         thread_id_factory: Callable[[], str] | None = None,
         agent_pack_registry: AgentPackRegistry | None = None,
+        event_store=None,
     ):
         self._recorder = recorder
         self._blackboard = blackboard
@@ -60,6 +62,7 @@ class WorkerPool:
         self._message_id_factory = message_id_factory or (lambda: f"msg-{uuid4().hex}")
         self._thread_id_factory = thread_id_factory or (lambda: f"thread-{uuid4().hex}")
         self._agent_pack_registry = agent_pack_registry or AgentPackRegistry.builtin()
+        self._domain_events = DomainEventEmitter(event_store) if event_store else None
 
     def start_worker(
         self,
@@ -171,6 +174,13 @@ class WorkerPool:
             assigned_task_ids=[task.task_id],
         )
         self._recorder.append_worker(crew.crew_id, worker)
+        if self._domain_events:
+            self._domain_events.emit_worker_spawned(
+                crew.crew_id, worker_id, contract.label, str(allocation.path),
+            )
+            self._domain_events.emit_worker_contract_recorded(
+                crew.crew_id, contract.contract_id, contract.label, contract.mission,
+            )
         self._blackboard.append(
             BlackboardEntry(
                 entry_id=self._entry_id_factory(),
@@ -304,6 +314,8 @@ class WorkerPool:
             cleanup_result = self._worktree_manager.cleanup(repo_root=repo_root, allocation=allocation, remove=True)
         result = self._native_session.stop(terminal_session=worker["terminal_session"])
         self._mark_worker_stopped(crew_id, worker_id)
+        if self._domain_events:
+            self._domain_events.emit_worker_stopped(crew_id, worker_id)
         return {"worker_id": worker_id, **result, "workspace_cleanup": cleanup_result}
 
     def stop_crew(self, *, repo_root: Path, crew_id: str) -> dict:
@@ -333,6 +345,8 @@ class WorkerPool:
             type="worker_claimed",
             status="completed",
         ))
+        if self._domain_events:
+            self._domain_events.emit_worker_claimed(crew_id, worker_id)
 
     def release_worker(self, crew_id: str, worker_id: str) -> None:
         """Transition worker from BUSY to IDLE (idempotent)."""
@@ -349,6 +363,8 @@ class WorkerPool:
             type="worker_released",
             status="completed",
         ))
+        if self._domain_events:
+            self._domain_events.emit_worker_released(crew_id, worker_id)
 
     def prune_orphans(self, *, repo_root: Path) -> dict:
         result = self._native_session.prune_orphans(active_sessions=self._active_terminal_sessions())

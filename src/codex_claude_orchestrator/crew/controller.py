@@ -21,6 +21,7 @@ from codex_claude_orchestrator.crew.models import (
 from codex_claude_orchestrator.state.crew_recorder import CrewRecorder
 from codex_claude_orchestrator.core.models import WorkspaceAllocation, WorkspaceMode
 from codex_claude_orchestrator.crew.task_graph import TaskGraphPlanner
+from codex_claude_orchestrator.v4.domain_events import DomainEventEmitter
 
 
 class CrewController:
@@ -36,6 +37,7 @@ class CrewController:
         merge_arbiter=None,
         crew_id_factory=None,
         entry_id_factory=None,
+        event_store=None,
     ):
         self._recorder = recorder
         self._blackboard = blackboard
@@ -46,6 +48,7 @@ class CrewController:
         self._merge_arbiter = merge_arbiter
         self._crew_id_factory = crew_id_factory or (lambda: f"crew-{uuid4().hex}")
         self._entry_id_factory = entry_id_factory or (lambda: f"entry-{uuid4().hex}")
+        self._domain_events = DomainEventEmitter(event_store) if event_store else None
 
     def start(
         self,
@@ -63,6 +66,8 @@ class CrewController:
             blackboard_path="blackboard.jsonl",
         )
         self._recorder.start_crew(crew)
+        if self._domain_events:
+            self._domain_events.emit_crew_started(crew.crew_id, goal, str(repo_root))
         self._blackboard.append(
             BlackboardEntry(
                 entry_id=self._entry_id_factory(),
@@ -113,6 +118,8 @@ class CrewController:
             blackboard_path="blackboard.jsonl",
         )
         self._recorder.start_crew(crew)
+        if self._domain_events:
+            self._domain_events.emit_crew_started(crew.crew_id, goal, str(repo_root))
         self._blackboard.append(
             BlackboardEntry(
                 entry_id=self._entry_id_factory(),
@@ -159,6 +166,8 @@ class CrewController:
         tasks = [existing for existing in tasks if existing.task_id != task.task_id]
         tasks.append(task)
         self._recorder.write_tasks(crew_id, tasks)
+        if self._domain_events:
+            self._domain_events.emit_task_created(crew_id, task.task_id, task.title)
         self.write_team_snapshot(
             crew_id=crew_id,
             last_decision={"action_type": "spawn_worker", "contract_id": contract.contract_id},
@@ -220,17 +229,22 @@ class CrewController:
         guardrail: str,
         evidence_refs: list[str] | None = None,
     ) -> dict:
-        return self._recorder.append_known_pitfall(
+        result = self._recorder.append_known_pitfall(
             crew_id,
             failure_class=failure_class,
             summary=summary,
             guardrail=guardrail,
             evidence_refs=evidence_refs or [],
         )
+        if self._domain_events:
+            self._domain_events.emit_pitfall_recorded(crew_id, failure_class, summary, guardrail)
+        return result
 
     def write_json_artifact(self, *, crew_id: str, artifact_name: str, payload) -> str:
         self._validate_artifact_name(artifact_name)
         self._recorder.write_json_artifact(crew_id, artifact_name, payload)
+        if self._domain_events:
+            self._domain_events.emit_artifact_written(crew_id, artifact_name)
         return artifact_name
 
     def record_blackboard_entry(
@@ -265,6 +279,10 @@ class CrewController:
             raise ValueError(f"decision crew_id mismatch: {payload.get('crew_id')} != {crew_id}")
         if hasattr(action, "to_dict"):
             self._recorder.append_decision(crew_id, action)
+            if self._domain_events:
+                self._domain_events.emit_decision_recorded(
+                    crew_id, payload.get("action_id", ""), payload.get("action_type", ""), payload.get("reason", ""),
+                )
             return payload
         else:
             from codex_claude_orchestrator.crew.models import DecisionAction, DecisionActionType, WorkerContract
@@ -304,6 +322,10 @@ class CrewController:
                 created_at=payload.get("created_at"),
             )
             self._recorder.append_decision(crew_id, decision)
+            if self._domain_events:
+                self._domain_events.emit_decision_recorded(
+                    crew_id, payload["action_id"], payload.get("action_type", ""), payload.get("reason", ""),
+                )
             return decision.to_dict()
 
     def _validate_artifact_name(self, artifact_name: str) -> None:
@@ -392,6 +414,8 @@ class CrewController:
     def stop(self, *, repo_root: Path, crew_id: str) -> dict:
         stop_result = self._worker_pool.stop_crew(repo_root=repo_root, crew_id=crew_id)
         self._recorder.finalize_crew(crew_id, CrewStatus.CANCELLED, "crew stopped by Codex")
+        if self._domain_events:
+            self._domain_events.emit_crew_stopped(crew_id, "crew stopped by Codex")
         return {"crew_id": crew_id, "status": CrewStatus.CANCELLED.value, "stop": stop_result}
 
     def stop_workers_for_accept(self, *, repo_root: Path, crew_id: str) -> dict:
@@ -437,6 +461,8 @@ class CrewController:
 
     def accept(self, *, crew_id: str, summary: str) -> dict:
         self._recorder.finalize_crew(crew_id, CrewStatus.ACCEPTED, summary)
+        if self._domain_events:
+            self._domain_events.emit_crew_finalized(crew_id, "accepted", summary)
         stop_result = self._worker_pool.stop_crew(repo_root=Path(self._recorder.read_crew(crew_id)["crew"]["repo"]), crew_id=crew_id)
         return {"crew_id": crew_id, "status": CrewStatus.ACCEPTED.value, "summary": summary, "stop": stop_result}
 
@@ -458,6 +484,8 @@ class CrewController:
         plan = self._merge_arbiter.build_plan(crew_id, changed_files_by_worker=changed_files_by_worker)
         self._recorder.write_text_artifact(crew_id, "merge_plan.json", json.dumps(plan, indent=2, ensure_ascii=False))
         self._recorder.update_crew(crew_id, {"merge_summary": plan["recommendation"]})
+        if self._domain_events:
+            self._domain_events.emit_crew_updated(crew_id, {"merge_summary": plan["recommendation"]})
         return plan
 
     def _mark_task_status(self, crew_id: str, task_id: str | None, status: CrewTaskStatus) -> None:

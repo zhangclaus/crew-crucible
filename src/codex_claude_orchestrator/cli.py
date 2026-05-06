@@ -147,7 +147,7 @@ def build_parser() -> argparse.ArgumentParser:
     crew_run.add_argument("--seed-contract", required=False)
     crew_run.add_argument("--verification-command", action="append", required=True)
     crew_run.add_argument("--max-rounds", type=int, default=3)
-    crew_run.add_argument("--poll-interval", type=float, default=5.0)
+    crew_run.add_argument("--poll-interval", type=float, default=300.0)
     crew_run.add_argument("--allow-dirty-base", action="store_true")
     crew_run.add_argument("--legacy-loop", action="store_true")
     crew_status = crew_subparsers.add_parser("status", help="Show crew status")
@@ -188,7 +188,7 @@ def build_parser() -> argparse.ArgumentParser:
     crew_supervise.add_argument("--crew", required=False)
     crew_supervise.add_argument("--verification-command", action="append", required=True)
     crew_supervise.add_argument("--max-rounds", type=int, default=3)
-    crew_supervise.add_argument("--poll-interval", type=float, default=5.0)
+    crew_supervise.add_argument("--poll-interval", type=float, default=300.0)
     crew_supervise.add_argument("--dynamic", action="store_true")
     crew_supervise.add_argument("--legacy-loop", action="store_true")
     crew_contracts = crew_subparsers.add_parser("contracts", help="List dynamic worker contracts")
@@ -344,7 +344,7 @@ def build_parser() -> argparse.ArgumentParser:
     claude_bridge_supervise.add_argument("--bridge-id", required=False)
     claude_bridge_supervise.add_argument("--verification-command", action="append", required=True)
     claude_bridge_supervise.add_argument("--max-rounds", type=int, default=3)
-    claude_bridge_supervise.add_argument("--poll-interval", type=float, default=5.0)
+    claude_bridge_supervise.add_argument("--poll-interval", type=float, default=300.0)
     claude_bridge_run = claude_bridge_subparsers.add_parser(
         "run",
         help="Start a supervised Claude bridge and run the Codex supervisor loop",
@@ -363,7 +363,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     claude_bridge_run.add_argument("--verification-command", action="append", required=True)
     claude_bridge_run.add_argument("--max-rounds", type=int, default=3)
-    claude_bridge_run.add_argument("--poll-interval", type=float, default=5.0)
+    claude_bridge_run.add_argument("--poll-interval", type=float, default=300.0)
 
     term = subparsers.add_parser("term", help="Manage tmux terminal consoles")
     term_subparsers = term.add_subparsers(dest="term_command", required=True)
@@ -443,7 +443,8 @@ def build_bridge_supervisor_loop(bridge: ClaudeBridge) -> BridgeSupervisorLoop:
 def build_crew_controller(repo_root: Path) -> CrewController:
     state_root = repo_root / ".orchestrator"
     recorder = CrewRecorder(state_root)
-    blackboard = BlackboardStore(recorder)
+    event_store = build_v4_event_store(repo_root, readonly=False)
+    blackboard = BlackboardStore(recorder, event_store=event_store)
     worktree_manager = WorktreeManager(state_root)
     return CrewController(
         recorder=recorder,
@@ -454,6 +455,7 @@ def build_crew_controller(repo_root: Path) -> CrewController:
             blackboard=blackboard,
             worktree_manager=worktree_manager,
             native_session=NativeClaudeSession(open_terminal_on_start=True),
+            event_store=event_store,
         ),
         verification_runner=CrewVerificationRunner(
             repo_root=repo_root,
@@ -462,6 +464,7 @@ def build_crew_controller(repo_root: Path) -> CrewController:
         ),
         change_recorder=WorkerChangeRecorder(recorder, worktree_manager=worktree_manager),
         merge_arbiter=MergeArbiter(),
+        event_store=event_store,
     )
 
 
