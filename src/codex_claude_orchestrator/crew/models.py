@@ -67,6 +67,7 @@ class BlackboardEntryType(StrEnum):
     VERIFICATION = "verification"
     REVIEW = "review"
     DECISION = "decision"
+    SUMMARY = "summary"
 
 
 class ActorType(StrEnum):
