@@ -241,7 +241,7 @@ def test_tmux_adapter_watch_turn_emits_output_and_marker_events():
     assert events[-1].payload["marker"] == "marker-1"
 
 
-def test_tmux_adapter_watch_turn_marker_not_seen_emits_only_output_chunk():
+def test_tmux_adapter_watch_turn_marker_not_seen_emits_only_output_chunk(monkeypatch):
     native = FakeNativeSession()
     native.observe_result = {
         "snapshot": "still running",
@@ -249,7 +249,11 @@ def test_tmux_adapter_watch_turn_marker_not_seen_emits_only_output_chunk():
         "marker_seen": False,
         "transcript_artifact": "turns/turn-1/transcript.txt",
     }
-    adapter = ClaudeCodeTmuxAdapter(native_session=native)
+    adapter = ClaudeCodeTmuxAdapter(
+        native_session=native,
+        poll_timeout=0.0,
+    )
+    monkeypatch.setattr("codex_claude_orchestrator.v4.adapters.tmux_claude.time.sleep", lambda _: None)
     turn = TurnEnvelope(
         crew_id="crew-1",
         worker_id="worker-1",
@@ -262,11 +266,11 @@ def test_tmux_adapter_watch_turn_marker_not_seen_emits_only_output_chunk():
 
     events = list(adapter.watch_turn(turn))
 
-    assert [event.type for event in events] == ["output.chunk"]
+    assert [event.type for event in events] == ["output.chunk", "runtime.poll_timeout"]
     assert events[0].payload == {"text": "still running"}
 
 
-def test_tmux_adapter_watch_turn_emits_required_outbox_without_marker(tmp_path: Path):
+def test_tmux_adapter_watch_turn_emits_required_outbox_without_marker(tmp_path: Path, monkeypatch):
     outbox_path = tmp_path / "workers" / "worker-1" / "outbox" / "turn-1.json"
     outbox_path.parent.mkdir(parents=True)
     outbox_path.write_text(
@@ -288,7 +292,11 @@ def test_tmux_adapter_watch_turn_emits_required_outbox_without_marker(tmp_path: 
         "marker_seen": False,
         "transcript_artifact": "",
     }
-    adapter = ClaudeCodeTmuxAdapter(native_session=native)
+    adapter = ClaudeCodeTmuxAdapter(
+        native_session=native,
+        poll_timeout=0.0,
+    )
+    monkeypatch.setattr("codex_claude_orchestrator.v4.adapters.tmux_claude.time.sleep", lambda _: None)
     turn = TurnEnvelope(
         crew_id="crew-1",
         worker_id="worker-1",
@@ -302,7 +310,7 @@ def test_tmux_adapter_watch_turn_emits_required_outbox_without_marker(tmp_path: 
 
     events = list(adapter.watch_turn(turn))
 
-    assert [event.type for event in events] == ["worker.outbox.detected"]
+    assert [event.type for event in events] == ["worker.outbox.detected", "runtime.poll_timeout"]
     assert events[0].payload["valid"] is True
     assert events[0].artifact_refs == ["workers/worker-1/outbox/turn-1.json"]
 
@@ -349,7 +357,7 @@ def test_tmux_adapter_watch_turn_reads_outbox_when_observe_fails(tmp_path: Path)
     }
 
 
-def test_tmux_adapter_filesystem_stream_dedupes_outbox_between_polls(tmp_path: Path):
+def test_tmux_adapter_filesystem_stream_dedupes_outbox_between_polls(tmp_path: Path, monkeypatch):
     outbox_path = tmp_path / "workers" / "worker-1" / "outbox" / "turn-1.json"
     outbox_path.parent.mkdir(parents=True)
     outbox_path.write_text(
@@ -371,7 +379,11 @@ def test_tmux_adapter_filesystem_stream_dedupes_outbox_between_polls(tmp_path: P
         "marker_seen": False,
         "transcript_artifact": "",
     }
-    adapter = ClaudeCodeTmuxAdapter(native_session=native)
+    adapter = ClaudeCodeTmuxAdapter(
+        native_session=native,
+        poll_timeout=0.0,
+    )
+    monkeypatch.setattr("codex_claude_orchestrator.v4.adapters.tmux_claude.time.sleep", lambda _: None)
     turn = TurnEnvelope(
         crew_id="crew-1",
         worker_id="worker-1",
@@ -387,11 +399,11 @@ def test_tmux_adapter_filesystem_stream_dedupes_outbox_between_polls(tmp_path: P
     adapter.commit_runtime_events(turn, first)
     second = list(adapter.watch_turn(turn))
 
-    assert [event.type for event in first] == ["worker.outbox.detected"]
-    assert second == []
+    assert [event.type for event in first] == ["worker.outbox.detected", "runtime.poll_timeout"]
+    assert [event.type for event in second] == ["runtime.poll_timeout"]
 
 
-def test_tmux_adapter_watch_turn_ignores_malformed_observation_values():
+def test_tmux_adapter_watch_turn_ignores_malformed_observation_values(monkeypatch):
     native = FakeNativeSession()
     native.observe_result = {
         "snapshot": ["not", "text"],
@@ -399,7 +411,11 @@ def test_tmux_adapter_watch_turn_ignores_malformed_observation_values():
         "marker_seen": "yes",
         "transcript_artifact": 42,
     }
-    adapter = ClaudeCodeTmuxAdapter(native_session=native)
+    adapter = ClaudeCodeTmuxAdapter(
+        native_session=native,
+        poll_timeout=0.0,
+    )
+    monkeypatch.setattr("codex_claude_orchestrator.v4.adapters.tmux_claude.time.sleep", lambda _: None)
     turn = TurnEnvelope(
         crew_id="crew-1",
         worker_id="worker-1",
@@ -412,7 +428,7 @@ def test_tmux_adapter_watch_turn_ignores_malformed_observation_values():
 
     events = list(adapter.watch_turn(turn))
 
-    assert events == []
+    assert [event.type for event in events] == ["runtime.poll_timeout"]
 
 
 def test_tmux_adapter_watch_turn_falls_back_when_marker_is_empty():
@@ -506,6 +522,59 @@ class TranscriptWritingNativeSession(FakeNativeSession):
             encoding="utf-8",
         )
         return result
+
+
+def test_watch_turn_polls_until_marker_detected(monkeypatch):
+    native = FakeNativeSession()
+    native.observe_result = {
+        "snapshot": "still working",
+        "marker": "marker-1",
+        "marker_seen": False,
+        "transcript_artifact": "",
+    }
+
+    call_count = 0
+
+    def observe_with_marker_on_third(**kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count >= 3:
+            return {
+                "snapshot": "done\nmarker-1",
+                "marker": "marker-1",
+                "marker_seen": True,
+                "transcript_artifact": "",
+            }
+        return {
+            "snapshot": "still working",
+            "marker": "marker-1",
+            "marker_seen": False,
+            "transcript_artifact": "",
+        }
+
+    native.observe = observe_with_marker_on_third
+    adapter = ClaudeCodeTmuxAdapter(
+        native_session=native,
+        poll_initial_delay=0.01,
+        poll_max_delay=0.05,
+        poll_timeout=10.0,
+    )
+    monkeypatch.setattr("codex_claude_orchestrator.v4.adapters.tmux_claude.time.sleep", lambda _: None)
+    turn = TurnEnvelope(
+        crew_id="crew-1",
+        worker_id="worker-1",
+        turn_id="turn-1",
+        round_id="round-1",
+        phase="source",
+        message="Implement",
+        expected_marker="marker-1",
+    )
+
+    events = list(adapter.watch_turn(turn))
+
+    assert call_count == 3
+    assert events[-1].type == "marker.detected"
+    assert events[-1].payload["marker"] == "marker-1"
 
 
 def test_tmux_adapter_initializes_transcript_cursor_before_send(tmp_path: Path):
