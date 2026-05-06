@@ -611,3 +611,144 @@ def test_tmux_adapter_initializes_transcript_cursor_before_send(tmp_path: Path):
         "runtime.observe_failed",
     ]
     assert events[0].payload["text"] == "during send\nmarker-1\n"
+
+
+def test_watch_turn_yields_incremental_output(monkeypatch):
+    native = FakeNativeSession()
+
+    call_count = 0
+    def observe_growing_text(**kwargs):
+        nonlocal call_count
+        call_count += 1
+        snapshots = ["hel", "hello", "hello world\nmarker-1"]
+        idx = min(call_count - 1, len(snapshots) - 1)
+        return {
+            "snapshot": snapshots[idx],
+            "marker": "marker-1",
+            "marker_seen": idx == len(snapshots) - 1,
+            "transcript_artifact": "",
+        }
+
+    native.observe = observe_growing_text
+    adapter = ClaudeCodeTmuxAdapter(
+        native_session=native,
+        poll_initial_delay=0.01,
+        poll_max_delay=0.05,
+        poll_timeout=10.0,
+    )
+    monkeypatch.setattr("codex_claude_orchestrator.v4.adapters.tmux_claude.time.sleep", lambda _: None)
+    turn = TurnEnvelope(
+        crew_id="crew-1", worker_id="worker-1", turn_id="turn-1",
+        round_id="round-1", phase="source", message="go", expected_marker="marker-1",
+    )
+
+    events = list(adapter.watch_turn(turn))
+
+    output_events = [e for e in events if e.type == "output.chunk"]
+    assert len(output_events) == 3
+    assert output_events[0].payload["text"] == "hel"
+    assert output_events[1].payload["text"] == "lo"
+    assert output_events[2].payload["text"] == " world\nmarker-1"
+    assert events[-1].type == "marker.detected"
+
+
+def test_watch_turn_timeout_yields_poll_timeout(monkeypatch):
+    native = FakeNativeSession()
+    native.observe_result = {
+        "snapshot": "still going",
+        "marker": "marker-1",
+        "marker_seen": False,
+        "transcript_artifact": "",
+    }
+    adapter = ClaudeCodeTmuxAdapter(
+        native_session=native,
+        poll_initial_delay=0.01,
+        poll_max_delay=0.05,
+        poll_timeout=0.05,
+    )
+    monkeypatch.setattr("codex_claude_orchestrator.v4.adapters.tmux_claude.time.sleep", lambda _: None)
+
+    # Make monotonic advance past deadline after first poll
+    import codex_claude_orchestrator.v4.adapters.tmux_claude as mod
+    original_monotonic = mod.time.monotonic
+    calls = [0]
+    def fake_monotonic():
+        calls[0] += 1
+        if calls[0] > 2:
+            return original_monotonic() + 999
+        return original_monotonic()
+    monkeypatch.setattr(mod.time, "monotonic", fake_monotonic)
+
+    turn = TurnEnvelope(
+        crew_id="crew-1", worker_id="worker-1", turn_id="turn-1",
+        round_id="round-1", phase="source", message="go", expected_marker="marker-1",
+    )
+
+    events = list(adapter.watch_turn(turn))
+
+    timeout_events = [e for e in events if e.type == "runtime.poll_timeout"]
+    assert len(timeout_events) == 1
+    assert timeout_events[0].payload["timeout_seconds"] == 0.05
+
+
+def test_watch_turn_backoff_increases_delay(monkeypatch):
+    native = FakeNativeSession()
+    native.observe_result = {
+        "snapshot": "waiting",
+        "marker": "marker-1",
+        "marker_seen": False,
+        "transcript_artifact": "",
+    }
+    adapter = ClaudeCodeTmuxAdapter(
+        native_session=native,
+        poll_initial_delay=1.0,
+        poll_max_delay=5.0,
+        poll_timeout=300.0,
+    )
+
+    class _AbortPolling(Exception):
+        """Sentinel raised to break out of the poll loop."""
+
+    sleep_calls = []
+    def track_sleep(d):
+        sleep_calls.append(d)
+        if len(sleep_calls) >= 4:
+            raise _AbortPolling()
+    monkeypatch.setattr("codex_claude_orchestrator.v4.adapters.tmux_claude.time.sleep", track_sleep)
+
+    turn = TurnEnvelope(
+        crew_id="crew-1", worker_id="worker-1", turn_id="turn-1",
+        round_id="round-1", phase="source", message="go", expected_marker="marker-1",
+    )
+
+    try:
+        list(adapter.watch_turn(turn))
+    except _AbortPolling:
+        pass
+
+    assert sleep_calls[0] == 1.0
+    assert sleep_calls[1] == 2.0
+    assert sleep_calls[2] == 4.0
+    assert sleep_calls[3] == 5.0  # capped at poll_max_delay
+
+
+def test_watch_turn_observe_failed_returns_immediately(monkeypatch):
+    native = FakeNativeSession()
+    native.observe_exception = RuntimeError("tmux session dead")
+    adapter = ClaudeCodeTmuxAdapter(
+        native_session=native,
+        poll_initial_delay=0.01,
+        poll_timeout=10.0,
+    )
+    monkeypatch.setattr("codex_claude_orchestrator.v4.adapters.tmux_claude.time.sleep", lambda _: None)
+    turn = TurnEnvelope(
+        crew_id="crew-1", worker_id="worker-1", turn_id="turn-1",
+        round_id="round-1", phase="source", message="go", expected_marker="marker-1",
+    )
+
+    events = list(adapter.watch_turn(turn))
+
+    assert len(events) == 1
+    assert events[0].type == "runtime.observe_failed"
+    assert events[0].payload["source"] == "tmux"
+    assert "tmux session dead" in events[0].payload["error"]
