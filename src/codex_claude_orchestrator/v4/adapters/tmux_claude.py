@@ -24,9 +24,19 @@ def _terminal_pane_for(turn: TurnEnvelope, worker: WorkerSpec | None) -> str:
 
 
 class ClaudeCodeTmuxAdapter:
-    def __init__(self, *, native_session):
+    def __init__(
+        self,
+        *,
+        native_session,
+        poll_initial_delay: float = 2.0,
+        poll_max_delay: float = 10.0,
+        poll_timeout: float = 300.0,
+    ):
         self._native_session = native_session
         self._workers: dict[str, WorkerSpec] = {}
+        self._poll_initial_delay = poll_initial_delay
+        self._poll_max_delay = poll_max_delay
+        self._poll_timeout = poll_timeout
 
     def register_worker(self, spec: WorkerSpec) -> WorkerHandle:
         self._workers[spec.worker_id] = spec

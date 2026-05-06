@@ -32,6 +32,27 @@ class FakeNativeSession:
         }
 
 
+def test_tmux_adapter_accepts_poll_parameters():
+    native = FakeNativeSession()
+    adapter = ClaudeCodeTmuxAdapter(
+        native_session=native,
+        poll_initial_delay=1.0,
+        poll_max_delay=5.0,
+        poll_timeout=60.0,
+    )
+    assert adapter._poll_initial_delay == 1.0
+    assert adapter._poll_max_delay == 5.0
+    assert adapter._poll_timeout == 60.0
+
+
+def test_tmux_adapter_poll_defaults():
+    native = FakeNativeSession()
+    adapter = ClaudeCodeTmuxAdapter(native_session=native)
+    assert adapter._poll_initial_delay == 2.0
+    assert adapter._poll_max_delay == 10.0
+    assert adapter._poll_timeout == 300.0
+
+
 def test_tmux_adapter_delivers_turn_to_native_session():
     native = FakeNativeSession()
     adapter = ClaudeCodeTmuxAdapter(native_session=native)

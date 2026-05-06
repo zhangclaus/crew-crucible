@@ -482,7 +482,7 @@ def build_v4_merge_transaction(
     )
 
 
-def build_v4_crew_runner(repo_root: Path, controller: CrewController) -> V4CrewRunner:
+def build_v4_crew_runner(repo_root: Path, controller: CrewController, poll_timeout: float = 300.0) -> V4CrewRunner:
     recorder = CrewRecorder(repo_root / ".orchestrator")
     message_bus = AgentMessageBus(recorder)
     protocol_store = ProtocolRequestStore(recorder)
@@ -492,6 +492,7 @@ def build_v4_crew_runner(repo_root: Path, controller: CrewController) -> V4CrewR
         artifact_store=ArtifactStore(repo_root / ".orchestrator" / "v4" / "artifacts"),
         adapter=ClaudeCodeTmuxAdapter(
             native_session=NativeClaudeSession(open_terminal_on_start=False),
+            poll_timeout=poll_timeout,
         ),
         turn_context_builder=TurnContextBuilder(
             message_bus,
@@ -877,7 +878,7 @@ def handle_crew_command(args) -> int:
         return 0
 
     if args.crew_command == "run":
-        runner = build_crew_supervisor_loop(controller) if args.legacy_loop else build_v4_crew_runner(repo_root, controller)
+        runner = build_crew_supervisor_loop(controller) if args.legacy_loop else build_v4_crew_runner(repo_root, controller, poll_timeout=args.poll_interval)
         if args.spawn_policy == "dynamic" and args.workers == "auto":
             result = runner.run(
                 repo_root=repo_root,
@@ -972,7 +973,7 @@ def handle_crew_command(args) -> int:
         print(json.dumps(controller.merge_plan(crew_id=crew_id), ensure_ascii=False))
         return 0
     if args.crew_command == "supervise":
-        runner = build_crew_supervisor_loop(controller) if args.legacy_loop else build_v4_crew_runner(repo_root, controller)
+        runner = build_crew_supervisor_loop(controller) if args.legacy_loop else build_v4_crew_runner(repo_root, controller, poll_timeout=args.poll_interval)
         if args.dynamic and args.legacy_loop:
             print(
                 json.dumps(
