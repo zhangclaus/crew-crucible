@@ -50,6 +50,30 @@ WORKER_TEMPLATES: dict[str, WorkerContract] = {
         authority_level=AuthorityLevel.SOURCE_WRITE,
         workspace_policy=WorkspacePolicy.WORKTREE,
     ),
+    "frontend-developer": WorkerContract(
+        contract_id="template-frontend-developer",
+        label="frontend-developer",
+        mission="Implement frontend changes (UI, components, styles, client-side logic).",
+        required_capabilities=["inspect_code", "edit_source"],
+        authority_level=AuthorityLevel.SOURCE_WRITE,
+        workspace_policy=WorkspacePolicy.WORKTREE,
+    ),
+    "backend-developer": WorkerContract(
+        contract_id="template-backend-developer",
+        label="backend-developer",
+        mission="Implement backend changes (API, services, models, database, server-side logic).",
+        required_capabilities=["inspect_code", "edit_source"],
+        authority_level=AuthorityLevel.SOURCE_WRITE,
+        workspace_policy=WorkspacePolicy.WORKTREE,
+    ),
+    "test-writer": WorkerContract(
+        contract_id="template-test-writer",
+        label="test-writer",
+        mission="Write and update tests. Do not modify source code.",
+        required_capabilities=["inspect_code", "edit_source"],
+        authority_level=AuthorityLevel.SOURCE_WRITE,
+        workspace_policy=WorkspacePolicy.WORKTREE,
+    ),
     "summarizer": WorkerContract(
         contract_id="template-summarizer",
         label="summarizer",
@@ -114,11 +138,15 @@ def register_lifecycle_tools(server: Server, controller) -> None:
         crew_id: str,
         label: str,
         mission: str = "",
+        write_scope: list[str] | None = None,
     ) -> list[TextContent]:
-        """Spawn a worker agent. label can be a template name (targeted-code-editor, repo-context-scout, patch-risk-auditor, verification-failure-analyst) or a custom label."""
+        """Spawn a worker agent. label can be a template name (targeted-code-editor, repo-context-scout, patch-risk-auditor, verification-failure-analyst, frontend-developer, backend-developer, test-writer, summarizer) or a custom label. write_scope limits which files the worker can modify."""
         template = WORKER_TEMPLATES.get(label)
+        overrides: dict = {"mission": mission or template.mission} if template else {}
+        if write_scope is not None:
+            overrides["write_scope"] = write_scope
         if template:
-            contract = replace(template, mission=mission or template.mission)
+            contract = replace(template, **overrides)
         else:
             contract = WorkerContract(
                 contract_id=f"contract-{label}",
@@ -127,6 +155,7 @@ def register_lifecycle_tools(server: Server, controller) -> None:
                 required_capabilities=["inspect_code", "edit_source"],
                 authority_level=AuthorityLevel.SOURCE_WRITE,
                 workspace_policy=WorkspacePolicy.WORKTREE,
+                **({"write_scope": write_scope} if write_scope else {}),
             )
         result = controller.ensure_worker(
             repo_root=Path(repo),

@@ -115,6 +115,87 @@ def test_crew_spawn_summarizer_template():
     assert "summary" in call_kwargs["contract"].mission.lower()
 
 
+def test_crew_spawn_frontend_developer_template():
+    """crew_spawn with frontend-developer label creates source_write contract."""
+    server = FakeServer()
+    controller = MagicMock()
+    controller.ensure_worker.return_value = {"worker_id": "wf1", "status": "running"}
+    register_lifecycle_tools(server, controller)
+    import asyncio
+    result = asyncio.run(server.tools["crew_spawn"](
+        repo="/repo", crew_id="c1", label="frontend-developer",
+    ))
+    data = json.loads(result[0].text)
+    assert data["worker_id"] == "wf1"
+    call_kwargs = controller.ensure_worker.call_args[1]
+    assert call_kwargs["contract"].label == "frontend-developer"
+    assert call_kwargs["contract"].authority_level.value == "source_write"
+    assert call_kwargs["contract"].workspace_policy.value == "worktree"
+
+
+def test_crew_spawn_backend_developer_template():
+    """crew_spawn with backend-developer label creates source_write contract."""
+    server = FakeServer()
+    controller = MagicMock()
+    controller.ensure_worker.return_value = {"worker_id": "wb1", "status": "running"}
+    register_lifecycle_tools(server, controller)
+    import asyncio
+    asyncio.run(server.tools["crew_spawn"](
+        repo="/repo", crew_id="c1", label="backend-developer",
+    ))
+    call_kwargs = controller.ensure_worker.call_args[1]
+    assert call_kwargs["contract"].label == "backend-developer"
+    assert call_kwargs["contract"].authority_level.value == "source_write"
+
+
+def test_crew_spawn_test_writer_template():
+    """crew_spawn with test-writer label creates source_write contract."""
+    server = FakeServer()
+    controller = MagicMock()
+    controller.ensure_worker.return_value = {"worker_id": "wt1", "status": "running"}
+    register_lifecycle_tools(server, controller)
+    import asyncio
+    asyncio.run(server.tools["crew_spawn"](
+        repo="/repo", crew_id="c1", label="test-writer",
+    ))
+    call_kwargs = controller.ensure_worker.call_args[1]
+    assert call_kwargs["contract"].label == "test-writer"
+    assert call_kwargs["contract"].authority_level.value == "source_write"
+    assert "test" in call_kwargs["contract"].mission.lower()
+
+
+def test_crew_spawn_with_write_scope():
+    """crew_spawn with write_scope overrides template's default scope."""
+    server = FakeServer()
+    controller = MagicMock()
+    controller.ensure_worker.return_value = {"worker_id": "w4", "status": "running"}
+    register_lifecycle_tools(server, controller)
+    import asyncio
+    asyncio.run(server.tools["crew_spawn"](
+        repo="/repo", crew_id="c1", label="frontend-developer",
+        mission="implement login page",
+        write_scope=["src/components/", "src/pages/"],
+    ))
+    call_kwargs = controller.ensure_worker.call_args[1]
+    assert call_kwargs["contract"].write_scope == ["src/components/", "src/pages/"]
+    assert call_kwargs["contract"].mission == "implement login page"
+
+
+def test_crew_spawn_custom_label_with_write_scope():
+    """crew_spawn with custom label and write_scope passes scope to contract."""
+    server = FakeServer()
+    controller = MagicMock()
+    controller.ensure_worker.return_value = {"worker_id": "w5", "status": "running"}
+    register_lifecycle_tools(server, controller)
+    import asyncio
+    asyncio.run(server.tools["crew_spawn"](
+        repo="/repo", crew_id="c1", label="my-worker",
+        mission="do stuff", write_scope=["src/api/"],
+    ))
+    call_kwargs = controller.ensure_worker.call_args[1]
+    assert call_kwargs["contract"].write_scope == ["src/api/"]
+
+
 def test_crew_stop_worker():
     """crew_stop_worker delegates to controller.stop_worker."""
     from pathlib import Path
