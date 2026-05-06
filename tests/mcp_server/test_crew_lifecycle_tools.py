@@ -95,6 +95,26 @@ def test_crew_spawn_template_mission_override():
     assert call_kwargs["contract"].authority_level.value == "readonly"
 
 
+def test_crew_spawn_summarizer_template():
+    """crew_spawn with summarizer label creates readonly contract."""
+    server = FakeServer()
+    controller = MagicMock()
+    controller.ensure_worker.return_value = {"worker_id": "ws1", "status": "running"}
+    register_lifecycle_tools(server, controller)
+    import asyncio
+    result = asyncio.run(server.tools["crew_spawn"](
+        repo="/repo", crew_id="c1", label="summarizer",
+    ))
+    data = json.loads(result[0].text)
+    assert data["worker_id"] == "ws1"
+    call_kwargs = controller.ensure_worker.call_args[1]
+    assert call_kwargs["contract"].label == "summarizer"
+    assert call_kwargs["contract"].authority_level.value == "readonly"
+    assert call_kwargs["contract"].workspace_policy.value == "readonly"
+    assert "inspect_code" in call_kwargs["contract"].required_capabilities
+    assert "summary" in call_kwargs["contract"].mission.lower()
+
+
 def test_crew_stop_worker():
     """crew_stop_worker delegates to controller.stop_worker."""
     from pathlib import Path

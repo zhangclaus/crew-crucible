@@ -50,6 +50,17 @@ WORKER_TEMPLATES: dict[str, WorkerContract] = {
         authority_level=AuthorityLevel.SOURCE_WRITE,
         workspace_policy=WorkspacePolicy.WORKTREE,
     ),
+    "summarizer": WorkerContract(
+        contract_id="template-summarizer",
+        label="summarizer",
+        mission="Read all blackboard entries for this crew. Produce a concise summary covering: "
+                "1) Key findings and facts, 2) Open risks, 3) Current progress, "
+                "4) Pending challenges or unresolved questions. "
+                "Write the summary to the blackboard as a 'summary' entry.",
+        required_capabilities=["inspect_code"],
+        authority_level=AuthorityLevel.READONLY,
+        workspace_policy=WorkspacePolicy.READONLY,
+    ),
 }
 
 
