@@ -55,3 +55,26 @@ def test_crew_challenge():
     import asyncio
     result = asyncio.run(server.tools["crew_challenge"](crew_id="c1", summary="fix the bug"))
     controller.challenge.assert_called_once_with(crew_id="c1", summary="fix the bug", task_id=None)
+
+
+def test_crew_accept_returns_error_on_exception():
+    server = FakeServer()
+    controller = MagicMock()
+    controller.accept.side_effect = FileNotFoundError("crew not found: c1")
+    register_decision_tools(server, controller)
+    import asyncio
+    result = asyncio.run(server.tools["crew_accept"](crew_id="c1"))
+    data = json.loads(result[0].text)
+    assert "error" in data
+    assert "crew not found" in data["error"]
+
+
+def test_crew_challenge_returns_error_on_exception():
+    server = FakeServer()
+    controller = MagicMock()
+    controller.challenge.side_effect = FileNotFoundError("crew not found: c1")
+    register_decision_tools(server, controller)
+    import asyncio
+    result = asyncio.run(server.tools["crew_challenge"](crew_id="c1", summary="bad"))
+    data = json.loads(result[0].text)
+    assert "error" in data
