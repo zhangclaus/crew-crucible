@@ -503,7 +503,7 @@ class CrewController:
         if self._domain_events:
             self._domain_events.emit_crew_finalized(crew_id, "accepted", summary)
         try:
-            stop_result = self._worker_pool.stop_crew(repo_root=Path(repo), crew_id=crew_id)
+            stop_result = self._worker_pool.stop_crew(repo_root=Path(repo), crew_id=crew_id, workspace_cleanup="remove")
         except Exception as exc:
             stop_result = {"error": str(exc)}
         return {"crew_id": crew_id, "status": CrewStatus.ACCEPTED.value, "summary": summary, "stop": stop_result}

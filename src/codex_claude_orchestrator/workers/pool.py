@@ -318,12 +318,19 @@ class WorkerPool:
             self._domain_events.emit_worker_stopped(crew_id, worker_id)
         return {"worker_id": worker_id, **result, "workspace_cleanup": cleanup_result}
 
-    def stop_crew(self, *, repo_root: Path, crew_id: str) -> dict:
+    def stop_crew(self, *, repo_root: Path, crew_id: str, workspace_cleanup: str = "keep") -> dict:
         stopped_workers = []
         for worker in self._recorder.read_crew(crew_id)["workers"]:
             result = self._native_session.stop(terminal_session=worker["terminal_session"])
+            cleanup = {"removed": False, "reason": "keep policy"}
+            if workspace_cleanup == "remove":
+                try:
+                    allocation = self._read_worker_allocation(crew_id, worker)
+                    cleanup = self._worktree_manager.cleanup(repo_root=repo_root, allocation=allocation, remove=True)
+                except Exception as exc:
+                    cleanup = {"removed": False, "reason": str(exc)}
             self._mark_worker_stopped(crew_id, worker["worker_id"])
-            stopped_workers.append({"worker_id": worker["worker_id"], **result})
+            stopped_workers.append({"worker_id": worker["worker_id"], **result, "workspace_cleanup": cleanup})
         return {"crew_id": crew_id, "stopped_workers": stopped_workers}
 
     def claim_worker(self, crew_id: str, worker_id: str) -> None:

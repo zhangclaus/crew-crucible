@@ -647,3 +647,82 @@ def test_prune_orphans_recovers_stale_busy_workers(tmp_path: Path):
     assert "worker-explorer" in result["recovered_workers"]
     worker = next(w for w in recorder.read_crew(crew.crew_id)["workers"] if w["worker_id"] == "worker-explorer")
     assert worker["status"] == "idle"
+
+
+def test_stop_crew_with_workspace_cleanup(tmp_path: Path):
+    """stop_crew(workspace_cleanup='remove') cleans up each worker's worktree."""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    (repo_root / "app.py").write_text("print('one')\n", encoding="utf-8")
+    recorder = CrewRecorder(repo_root / ".orchestrator")
+    crew = CrewRecord(crew_id="crew-1", root_goal="Build V3 MVP", repo=repo_root)
+    recorder.start_crew(crew)
+    fake_native = FakeNativeSession()
+    fake_worktree = FakeWorktreeManager()
+    pool = WorkerPool(
+        recorder=recorder,
+        blackboard=BlackboardStore(recorder),
+        worktree_manager=fake_worktree,
+        native_session=fake_native,
+        worker_id_factory=lambda role: f"worker-{role.value}",
+    )
+    # Start two implementer workers so we get worktree allocations
+    for i, role in enumerate((WorkerRole.IMPLEMENTER, WorkerRole.IMPLEMENTER)):
+        pool.start_worker(
+            repo_root=repo_root,
+            crew=crew,
+            task=CrewTaskRecord(
+                task_id=f"task-{i}",
+                crew_id=crew.crew_id,
+                title=f"Implement {i}",
+                instructions="Work.",
+                role_required=role,
+            ),
+        )
+    recorder.update_crew(
+        crew.crew_id,
+        {"status": CrewStatus.RUNNING.value, "active_worker_ids": ["worker-implementer", "worker-implementer"]},
+    )
+
+    result = pool.stop_crew(repo_root=repo_root, crew_id=crew.crew_id, workspace_cleanup="remove")
+
+    assert result["crew_id"] == "crew-1"
+    assert len(result["stopped_workers"]) == 2
+    for entry in result["stopped_workers"]:
+        assert entry["workspace_cleanup"]["removed"] is True
+    assert len(fake_worktree.cleaned) == 2
+    assert all(c["remove"] is True for c in fake_worktree.cleaned)
+
+
+def test_stop_crew_default_keep_does_not_clean(tmp_path: Path):
+    """stop_crew() default workspace_cleanup='keep' does not clean worktrees."""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    recorder = CrewRecorder(repo_root / ".orchestrator")
+    crew = CrewRecord(crew_id="crew-1", root_goal="Build V3 MVP", repo=repo_root)
+    recorder.start_crew(crew)
+    fake_native = FakeNativeSession()
+    fake_worktree = FakeWorktreeManager()
+    pool = WorkerPool(
+        recorder=recorder,
+        blackboard=BlackboardStore(recorder),
+        worktree_manager=fake_worktree,
+        native_session=fake_native,
+        worker_id_factory=lambda role: f"worker-{role.value}",
+    )
+    pool.start_worker(
+        repo_root=repo_root,
+        crew=crew,
+        task=CrewTaskRecord(
+            task_id="task-explorer",
+            crew_id=crew.crew_id,
+            title="Explore",
+            instructions="Read.",
+            role_required=WorkerRole.EXPLORER,
+        ),
+    )
+
+    result = pool.stop_crew(repo_root=repo_root, crew_id=crew.crew_id)
+
+    assert result["stopped_workers"][0]["workspace_cleanup"] == {"removed": False, "reason": "keep policy"}
+    assert len(fake_worktree.cleaned) == 0

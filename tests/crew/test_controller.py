@@ -167,6 +167,7 @@ def test_crew_controller_fake_flow_start_send_verify_challenge_accept(tmp_path: 
     assert challenge["summary"] == "Need more evidence"
     assert accepted["status"] == "accepted"
     assert pool.stopped_crews[0]["crew_id"] == "crew-1"
+    assert pool.stopped_crews[0]["workspace_cleanup"] == "remove"
 
 
 def test_controller_stop_cancels_crew_and_stops_workers(tmp_path: Path):
