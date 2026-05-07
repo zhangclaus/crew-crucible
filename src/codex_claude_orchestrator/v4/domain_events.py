@@ -8,6 +8,7 @@ idempotency key conventions and payload normalization.
 from __future__ import annotations
 
 import hashlib
+import json
 from typing import Any
 
 from codex_claude_orchestrator.v4.event_store_protocol import EventStore
@@ -69,7 +70,7 @@ class DomainEventEmitter:
             stream_id=crew_id,
             type="crew.updated",
             crew_id=crew_id,
-            idempotency_key=f"{crew_id}/crew.updated",
+            idempotency_key=f"{crew_id}/crew.updated/{_summary_hash(json.dumps(updates, sort_keys=True, default=str))}",
             payload=normalize(updates),
         )
 
@@ -281,6 +282,157 @@ class DomainEventEmitter:
             crew_id=crew_id,
             idempotency_key=f"{crew_id}/artifact/{artifact_name}/{sha256}",
             payload=normalize(payload),
+        )
+
+    # -- Verification -----------------------------------------------------
+
+    def emit_verification_passed(
+        self,
+        crew_id: str,
+        worker_id: str,
+        command: str,
+        result: dict[str, Any] | None = None,
+        round_id: str = "",
+        contract_id: str = "",
+        artifact_refs: list[str] | None = None,
+    ) -> AgentEvent:
+        payload: dict[str, Any] = {"command": command}
+        if result:
+            payload["result"] = result
+        return self._events.append(
+            stream_id=crew_id,
+            type="verification.passed",
+            crew_id=crew_id,
+            worker_id=worker_id,
+            round_id=round_id,
+            contract_id=contract_id,
+            idempotency_key=f"{crew_id}/{round_id}/{worker_id}/verification/{_summary_hash(command)}",
+            payload=normalize(payload),
+            artifact_refs=artifact_refs or [],
+        )
+
+    def emit_verification_failed(
+        self,
+        crew_id: str,
+        worker_id: str,
+        command: str,
+        result: dict[str, Any] | None = None,
+        round_id: str = "",
+        contract_id: str = "",
+        artifact_refs: list[str] | None = None,
+    ) -> AgentEvent:
+        payload: dict[str, Any] = {"command": command}
+        if result:
+            payload["result"] = result
+        return self._events.append(
+            stream_id=crew_id,
+            type="verification.failed",
+            crew_id=crew_id,
+            worker_id=worker_id,
+            round_id=round_id,
+            contract_id=contract_id,
+            idempotency_key=f"{crew_id}/{round_id}/{worker_id}/verification/{_summary_hash(command)}",
+            payload=normalize(payload),
+            artifact_refs=artifact_refs or [],
+        )
+
+    # -- Challenge & Repair -----------------------------------------------
+
+    def emit_challenge_issued(
+        self,
+        crew_id: str,
+        worker_id: str,
+        summary: str,
+        category: str = "",
+        severity: str = "block",
+        source_event_ids: list[str] | None = None,
+        round_id: str = "",
+        contract_id: str = "",
+        artifact_refs: list[str] | None = None,
+    ) -> AgentEvent:
+        payload: dict[str, Any] = {
+            "severity": severity,
+            "category": category,
+            "finding": summary,
+            "required_response": "Repair the source worker output before verification or accept.",
+            "repair_allowed": True,
+        }
+        if source_event_ids:
+            payload["source_event_ids"] = source_event_ids
+        return self._events.append(
+            stream_id=crew_id,
+            type="challenge.issued",
+            crew_id=crew_id,
+            worker_id=worker_id,
+            round_id=round_id,
+            contract_id=contract_id,
+            idempotency_key=f"{crew_id}/{round_id}/{worker_id}/challenge/{category}",
+            payload=normalize(payload),
+            artifact_refs=artifact_refs or [],
+        )
+
+    def emit_repair_requested(
+        self,
+        crew_id: str,
+        worker_id: str,
+        instruction: str,
+        challenge_event_id: str = "",
+        round_id: str = "",
+        contract_id: str = "",
+        artifact_refs: list[str] | None = None,
+    ) -> AgentEvent:
+        payload: dict[str, Any] = {
+            "instruction": instruction,
+            "worker_policy": "same_worker",
+        }
+        if challenge_event_id:
+            payload["challenge_event_id"] = challenge_event_id
+        return self._events.append(
+            stream_id=crew_id,
+            type="repair.requested",
+            crew_id=crew_id,
+            worker_id=worker_id,
+            round_id=round_id,
+            contract_id=contract_id,
+            idempotency_key=f"{crew_id}/{round_id}/{worker_id}/repair/{_summary_hash(instruction)}",
+            payload=normalize(payload),
+            artifact_refs=artifact_refs or [],
+        )
+
+    # -- Review -----------------------------------------------------------
+
+    def emit_review_completed(
+        self,
+        crew_id: str,
+        worker_id: str,
+        verdict_status: str,
+        verdict_summary: str = "",
+        findings: list[str] | None = None,
+        evidence_refs: list[str] | None = None,
+        source_event_ids: list[str] | None = None,
+        round_id: str = "",
+        turn_id: str = "",
+        contract_id: str = "",
+    ) -> AgentEvent:
+        payload: dict[str, Any] = {
+            "status": verdict_status,
+            "summary": verdict_summary,
+        }
+        if findings:
+            payload["findings"] = findings
+        if source_event_ids:
+            payload["source_event_ids"] = source_event_ids
+        return self._events.append(
+            stream_id=crew_id,
+            type="review.completed",
+            crew_id=crew_id,
+            worker_id=worker_id,
+            turn_id=turn_id,
+            round_id=round_id,
+            contract_id=contract_id,
+            idempotency_key=f"{crew_id}/{turn_id}/review.completed",
+            payload=normalize(payload),
+            artifact_refs=evidence_refs or [],
         )
 
     # -- Pitfalls ---------------------------------------------------------

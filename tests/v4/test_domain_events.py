@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 from dataclasses import dataclass, field
 
@@ -97,12 +98,14 @@ class TestEmitCrewStarted:
 
 class TestEmitCrewUpdated:
     def test_produces_correct_event_type(self, emitter: DomainEventEmitter) -> None:
-        event = emitter.emit_crew_updated("crew-1", {"status": "running", "planner_summary": "ready"})
+        updates = {"status": "running", "planner_summary": "ready"}
+        event = emitter.emit_crew_updated("crew-1", updates)
+        expected_hash = _summary_hash(json.dumps(updates, sort_keys=True, default=str))
 
         assert event.type == "crew.updated"
         assert event.crew_id == "crew-1"
         assert event.stream_id == "crew-1"
-        assert event.idempotency_key == "crew-1/crew.updated"
+        assert event.idempotency_key == f"crew-1/crew.updated/{expected_hash}"
         assert event.payload == {"status": "running", "planner_summary": "ready"}
 
 
@@ -351,9 +354,14 @@ class TestIdempotencyKeyConventions:
 
     def test_crew_events_use_crew_id_only(self, emitter: DomainEventEmitter) -> None:
         assert emitter.emit_crew_started("c1", "g").idempotency_key == "c1/crew.started"
-        assert emitter.emit_crew_updated("c1", {}).idempotency_key == "c1/crew.updated"
         assert emitter.emit_crew_stopped("c1").idempotency_key == "c1/crew.stopped"
         assert emitter.emit_crew_finalized("c1", "ok").idempotency_key == "c1/crew.finalized"
+
+    def test_crew_updated_includes_payload_hash(self, emitter: DomainEventEmitter) -> None:
+        updates = {"status": "done"}
+        key = emitter.emit_crew_updated("c1", updates).idempotency_key
+        expected_hash = _summary_hash(json.dumps(updates, sort_keys=True, default=str))
+        assert key == f"c1/crew.updated/{expected_hash}"
 
     def test_worker_events_include_worker_id(self, emitter: DomainEventEmitter) -> None:
         assert emitter.emit_worker_spawned("c1", "w1").idempotency_key == "c1/worker.spawned/w1"
