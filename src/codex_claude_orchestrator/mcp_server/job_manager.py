@@ -119,7 +119,7 @@ class JobManager:
             finally:
                 with self._lock:
                     job.completed_at = time.monotonic()
-                job.update_elapsed()
+                    job.update_elapsed()
 
         thread = threading.Thread(target=_run, daemon=True, name=f"crew-job-{job_id}")
         job.thread = thread
