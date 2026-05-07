@@ -20,6 +20,7 @@ from codex_claude_orchestrator.v4.paths import V4Paths
 from codex_claude_orchestrator.v4.planner import PlannerPolicy
 from codex_claude_orchestrator.v4.repo_intelligence import RepoIntelligence
 from codex_claude_orchestrator.v4.runtime import WorkerSpec
+from codex_claude_orchestrator.v4.subtask import SubTask
 from codex_claude_orchestrator.v4.workflow import V4WorkflowEngine
 from codex_claude_orchestrator.workers.selection import WorkerSelectionPolicy
 
@@ -399,6 +400,43 @@ class V4CrewRunner:
             "rounds": max_rounds,
             "events": events,
         }
+
+    async def async_supervise(
+        self,
+        *,
+        repo_root: Path,
+        crew_id: str,
+        goal: str,
+        subtasks: list[SubTask],
+        verification_commands: list[str],
+        max_rounds: int = 3,
+        max_workers: int = 3,
+        progress_callback: Callable[[str, int, int], None] | None = None,
+        cancel_event: threading.Event | None = None,
+    ) -> dict[str, Any]:
+        """Async parallel supervision entry point.
+
+        Delegates to ParallelSupervisor for concurrent worker execution
+        with two-layer adversarial review (unit + integration).
+        """
+        from codex_claude_orchestrator.v4.parallel_supervisor import ParallelSupervisor
+
+        ps = ParallelSupervisor(
+            controller=self._controller,
+            supervisor=self._supervisor,
+            event_store=self._events,
+        )
+        return await ps.supervise(
+            repo_root=repo_root,
+            crew_id=crew_id,
+            goal=goal,
+            subtasks=subtasks,
+            verification_commands=verification_commands,
+            max_rounds=max_rounds,
+            max_workers=max_workers,
+            progress_callback=progress_callback,
+            cancel_event=cancel_event,
+        )
 
     def _spawn_source_worker(
         self,

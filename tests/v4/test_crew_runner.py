@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from codex_claude_orchestrator.crew.models import WorkerRole
 from codex_claude_orchestrator.v4.crew_runner import V4CrewRunner
 from codex_claude_orchestrator.v4.event_store import SQLiteEventStore
+from codex_claude_orchestrator.v4.subtask import SubTask
 
 
 def test_v4_crew_runner_supervise_completes_turn_verifies_and_marks_ready(
@@ -684,6 +689,62 @@ def test_run_review_maps_turn_cancelled_to_review_cancelled(tmp_path: Path) -> N
 
     assert result["status"] == "review_cancelled"
     assert "user cancelled" in result["reason"]
+
+
+@pytest.mark.asyncio
+async def test_async_supervise_runs_parallel_round(tmp_path: Path) -> None:
+    """async_supervise with subtasks should delegate to ParallelSupervisor."""
+    changes_map = {
+        "worker-source-task-1": {"changed_files": ["src/a.py"], "worker_id": "worker-source-task-1"},
+        "worker-source-task-2": {"changed_files": ["src/b.py"], "worker_id": "worker-source-task-2"},
+    }
+
+    def ensure_worker_side_effect(*, repo_root, crew_id, contract, allow_dirty_base=False):
+        wid = f"worker-{contract.contract_id}"
+        return {"worker_id": wid, "contract_id": contract.contract_id}
+
+    controller = MagicMock()
+    controller.ensure_worker = MagicMock(side_effect=ensure_worker_side_effect)
+
+    def changes_side_effect(*, crew_id, worker_id=None):
+        return changes_map.get(worker_id, {"changed_files": [], "worker_id": worker_id})
+
+    controller.changes = MagicMock(side_effect=changes_side_effect)
+    controller.verify = MagicMock(return_value={"passed": True, "summary": "ok"})
+    controller.challenge = MagicMock(return_value={})
+
+    supervisor = MagicMock()
+    supervisor.async_run_worker_turn = AsyncMock(
+        side_effect=lambda **kw: {"status": "turn_completed", "turn_id": f"turn-{kw.get('worker_id', 'x')}"}
+    )
+
+    event_store = MagicMock()
+    event_store.list_by_turn = MagicMock(return_value=[])
+
+    runner = V4CrewRunner(
+        controller=controller,
+        supervisor=supervisor,
+        event_store=event_store,
+    )
+
+    subtasks = [
+        SubTask(task_id="task-1", description="Implement A", scope=["src/a.py"]),
+        SubTask(task_id="task-2", description="Implement B", scope=["src/b.py"]),
+    ]
+
+    result = await runner.async_supervise(
+        repo_root=tmp_path,
+        crew_id="crew-1",
+        goal="Build features A and B",
+        subtasks=subtasks,
+        verification_commands=["pytest -q"],
+        max_rounds=1,
+    )
+
+    assert result["status"] == "ready_for_codex_accept"
+    assert result["runtime"] == "v4-parallel"
+    assert subtasks[0].status == "passed"
+    assert subtasks[1].status == "passed"
 
 
 class FakeCrew:
