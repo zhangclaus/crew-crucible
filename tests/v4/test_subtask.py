@@ -1,5 +1,7 @@
 """Tests for the SubTask data model used by the parallel supervisor."""
 
+import pytest
+
 from codex_claude_orchestrator.v4.subtask import SubTask
 
 
@@ -166,3 +168,7 @@ class TestSubTaskFromDict:
         restored = SubTask.from_dict(original.to_dict())
         assert restored.result == {"deployed": True, "url": "https://example.com"}
         assert restored.review_attempts == 3
+
+    def test_from_dict_missing_required_key_raises(self) -> None:
+        with pytest.raises(KeyError):
+            SubTask.from_dict({"task_id": "t-1"})  # missing description, scope

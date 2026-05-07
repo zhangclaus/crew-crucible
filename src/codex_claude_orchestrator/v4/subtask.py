@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
-@dataclass
+@dataclass(slots=True)
 class SubTask:
     """A unit of work decomposed from a parent task for parallel execution.
 
