@@ -95,16 +95,17 @@ async def test_parallel_watch_and_review_all_pass(tmp_path: Path) -> None:
     )
     supervisor = _make_supervisor(
         turn_results=[
-            {"status": "turn_completed", "turn_id": "t1"},
-            {"status": "turn_completed", "turn_id": "t2"},
-            # unit review turns
-            {"status": "turn_completed", "turn_id": "review-t1"},
-            {"status": "turn_completed", "turn_id": "review-t2"},
+            # source turns (round 1)
+            {"status": "turn_completed", "turn_id": "parallel-round-1-worker-source-task-1-source"},
+            {"status": "turn_completed", "turn_id": "parallel-round-1-worker-source-task-2-source"},
+            # unit review turns (round 1)
+            {"status": "turn_completed", "turn_id": "parallel-round-1-worker-review-task-1-unit_review"},
+            {"status": "turn_completed", "turn_id": "parallel-round-1-worker-review-task-2-unit_review"},
         ]
     )
     event_store = _make_event_store(events_by_turn={
-        "review-t1": [],
-        "review-t2": [],
+        "parallel-round-1-worker-review-task-1-unit_review": [],
+        "parallel-round-1-worker-review-task-2-unit_review": [],
     })
 
     ps = ParallelSupervisor(controller=controller, supervisor=supervisor, event_store=event_store)
@@ -139,10 +140,10 @@ async def test_parallel_watch_and_review_failure(tmp_path: Path) -> None:
     )
     supervisor = _make_supervisor(
         turn_results=[
-            # source turn
-            {"status": "turn_completed", "turn_id": "source-turn-1"},
-            # unit review turn
-            {"status": "turn_completed", "turn_id": "review-turn-1"},
+            # source turn (round 1)
+            {"status": "turn_completed", "turn_id": "parallel-round-1-worker-source-task-1-source"},
+            # unit review turn (round 1)
+            {"status": "turn_completed", "turn_id": "parallel-round-1-worker-review-task-1-unit_review"},
         ]
     )
 
@@ -150,7 +151,7 @@ async def test_parallel_watch_and_review_failure(tmp_path: Path) -> None:
     block_event = MagicMock()
     block_event.type = "worker.outbox.detected"
     block_event.payload = {"summary": "BLOCK: code quality issues found"}
-    block_event.worker_id = "worker-reviewer"
+    block_event.worker_id = "worker-review-task-1"
 
     event_store = MagicMock()
     event_store.list_by_turn = MagicMock(return_value=[block_event])
@@ -187,16 +188,17 @@ async def test_integration_review_detects_conflicts(tmp_path: Path) -> None:
     )
     supervisor = _make_supervisor(
         turn_results=[
-            {"status": "turn_completed", "turn_id": "t1"},
-            {"status": "turn_completed", "turn_id": "t2"},
-            # unit review reviewer turns
-            {"status": "turn_completed", "turn_id": "review-t1"},
-            {"status": "turn_completed", "turn_id": "review-t2"},
+            # source turns (round 1)
+            {"status": "turn_completed", "turn_id": "parallel-round-1-worker-source-task-1-source"},
+            {"status": "turn_completed", "turn_id": "parallel-round-1-worker-source-task-2-source"},
+            # unit review turns (round 1)
+            {"status": "turn_completed", "turn_id": "parallel-round-1-worker-review-task-1-unit_review"},
+            {"status": "turn_completed", "turn_id": "parallel-round-1-worker-review-task-2-unit_review"},
         ]
     )
     event_store = _make_event_store(events_by_turn={
-        "review-t1": [],
-        "review-t2": [],
+        "parallel-round-1-worker-review-task-1-unit_review": [],
+        "parallel-round-1-worker-review-task-2-unit_review": [],
     })
 
     ps = ParallelSupervisor(controller=controller, supervisor=supervisor, event_store=event_store)
@@ -231,16 +233,17 @@ async def test_integration_review_passes_no_conflicts(tmp_path: Path) -> None:
     )
     supervisor = _make_supervisor(
         turn_results=[
-            {"status": "turn_completed", "turn_id": "t1"},
-            {"status": "turn_completed", "turn_id": "t2"},
-            # unit review reviewer turns
-            {"status": "turn_completed", "turn_id": "review-t1"},
-            {"status": "turn_completed", "turn_id": "review-t2"},
+            # source turns (round 1)
+            {"status": "turn_completed", "turn_id": "parallel-round-1-worker-source-task-1-source"},
+            {"status": "turn_completed", "turn_id": "parallel-round-1-worker-source-task-2-source"},
+            # unit review turns (round 1)
+            {"status": "turn_completed", "turn_id": "parallel-round-1-worker-review-task-1-unit_review"},
+            {"status": "turn_completed", "turn_id": "parallel-round-1-worker-review-task-2-unit_review"},
         ]
     )
     event_store = _make_event_store(events_by_turn={
-        "review-t1": [],
-        "review-t2": [],
+        "parallel-round-1-worker-review-task-1-unit_review": [],
+        "parallel-round-1-worker-review-task-2-unit_review": [],
     })
 
     ps = ParallelSupervisor(controller=controller, supervisor=supervisor, event_store=event_store)
@@ -319,16 +322,16 @@ async def test_verification_failure_challenges_and_retries(tmp_path: Path) -> No
     supervisor = _make_supervisor(
         turn_results=[
             # Round 1: source + unit review
-            {"status": "turn_completed", "turn_id": "r1-source"},
-            {"status": "turn_completed", "turn_id": "r1-review"},
+            {"status": "turn_completed", "turn_id": "parallel-round-1-worker-source-task-1-source"},
+            {"status": "turn_completed", "turn_id": "parallel-round-1-worker-review-task-1-unit_review"},
             # Round 2: source + unit review
-            {"status": "turn_completed", "turn_id": "r2-source"},
-            {"status": "turn_completed", "turn_id": "r2-review"},
+            {"status": "turn_completed", "turn_id": "parallel-round-2-worker-source-task-1-source"},
+            {"status": "turn_completed", "turn_id": "parallel-round-2-worker-review-task-1-unit_review"},
         ]
     )
     event_store = _make_event_store(events_by_turn={
-        "r1-review": [],
-        "r2-review": [],
+        "parallel-round-1-worker-review-task-1-unit_review": [],
+        "parallel-round-2-worker-review-task-1-unit_review": [],
     })
 
     ps = ParallelSupervisor(controller=controller, supervisor=supervisor, event_store=event_store)
@@ -404,11 +407,13 @@ async def test_progress_callback_invoked(tmp_path: Path) -> None:
     )
     supervisor = _make_supervisor(
         turn_results=[
-            {"status": "turn_completed", "turn_id": "t1"},
-            {"status": "turn_completed", "turn_id": "review-t1"},
+            # source turn (round 1)
+            {"status": "turn_completed", "turn_id": "parallel-round-1-worker-source-task-1-source"},
+            # unit review turn (round 1)
+            {"status": "turn_completed", "turn_id": "parallel-round-1-worker-review-task-1-unit_review"},
         ]
     )
-    event_store = _make_event_store(events_by_turn={"review-t1": []})
+    event_store = _make_event_store(events_by_turn={"parallel-round-1-worker-review-task-1-unit_review": []})
 
     phases: list[tuple[str, int, int]] = []
 
