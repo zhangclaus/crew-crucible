@@ -332,6 +332,15 @@ class V4CrewRunner:
                     continue
                 repair_requests.clear()
 
+            if cancel_event and cancel_event.is_set():
+                return {
+                    "crew_id": crew_id,
+                    "status": "cancelled",
+                    "runtime": "v4",
+                    "rounds": round_index,
+                    "events": events,
+                }
+
             _progress("verifying", round_index)
             verification_results = [
                 self._controller.verify(

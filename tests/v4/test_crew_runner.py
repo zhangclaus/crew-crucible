@@ -611,6 +611,54 @@ def test_run_review_maps_turn_timeout_to_review_timeout(tmp_path: Path) -> None:
     assert "poll timeout" in result["reason"]
 
 
+def test_cancel_checked_between_review_and_verification(tmp_path: Path) -> None:
+    """cancel_event should be checked between review completion and verification."""
+    import threading
+
+    store = SQLiteEventStore(tmp_path / "events.sqlite3")
+    cancel_event = threading.Event()
+
+    controller = FakeController([{"passed": True, "summary": "command passed"}])
+    supervisor = FakeV4Supervisor(
+        [
+            {"status": "turn_completed", "turn_id": "round-1-worker-source-source"},
+            {"status": "turn_completed", "turn_id": "round-1-worker-review-review"},
+        ],
+        event_store=store,
+        review_summaries=[
+            "<<<CODEX_REVIEW\nverdict: OK\nsummary: patch matches spec\nfindings:\n>>>"
+        ],
+    )
+
+    # Set cancel_event after the review turn completes, simulating a cancel
+    # arriving while review is in progress
+    original_run_worker_turn = supervisor.run_worker_turn
+
+    def _cancelling_run_worker_turn(**kwargs):
+        result = original_run_worker_turn(**kwargs)
+        if kwargs.get("phase") == "review":
+            cancel_event.set()
+        return result
+
+    supervisor.run_worker_turn = _cancelling_run_worker_turn
+
+    result = V4CrewRunner(
+        controller=controller,
+        supervisor=supervisor,
+        event_store=store,
+    ).supervise(
+        repo_root=tmp_path,
+        crew_id="crew-1",
+        verification_commands=["pytest -q"],
+        max_rounds=1,
+        cancel_event=cancel_event,
+    )
+
+    assert result["status"] == "cancelled"
+    assert result["runtime"] == "v4"
+    assert controller.verify_called == []  # verification must NOT have run
+
+
 def test_run_review_maps_turn_cancelled_to_review_cancelled(tmp_path: Path) -> None:
     """_run_review should map turn_cancelled to review_cancelled, not waiting_for_worker."""
     store = SQLiteEventStore(tmp_path / "events.sqlite3")
