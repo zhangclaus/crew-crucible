@@ -479,6 +479,9 @@ class TestToReadCrewDict:
             "team_snapshot",
             "final_report",
             "artifacts",
+            "challenges",
+            "verifications",
+            "reviews",
         }
         assert set(result.keys()) == expected_keys
 
@@ -585,6 +588,134 @@ class TestHasEvents:
         ]
         proj = CrewStateProjection.from_events(events)
         assert proj.has_events() is True
+
+
+class TestEventTypeMismatch:
+    """H13: verification/challenge/review event types must update projection state."""
+
+    def test_verification_passed_tracked_in_projection(self) -> None:
+        """H13: verification.passed events must update projection state."""
+        events = [
+            _make_event("e1", "crew.started", payload={"goal": "test"}),
+            _make_event(
+                "e2",
+                "verification.passed",
+                worker_id="w1",
+                round_id="r1",
+                payload={"command": "pytest"},
+                sequence=2,
+            ),
+        ]
+        proj = CrewStateProjection.from_events(events)
+        assert len(proj.verifications) == 1
+        assert proj.verifications[0]["worker_id"] == "w1"
+        assert proj.verifications[0]["passed"] is True
+        assert proj.verifications[0]["command"] == "pytest"
+
+    def test_verification_failed_tracked_in_projection(self) -> None:
+        """H13: verification.failed events must update projection state."""
+        events = [
+            _make_event("e1", "crew.started", payload={"goal": "test"}),
+            _make_event(
+                "e2",
+                "verification.failed",
+                worker_id="w1",
+                round_id="r1",
+                payload={"command": "pytest"},
+                sequence=2,
+            ),
+        ]
+        proj = CrewStateProjection.from_events(events)
+        assert len(proj.verifications) == 1
+        assert proj.verifications[0]["passed"] is False
+
+    def test_challenge_issued_tracked_in_projection(self) -> None:
+        """H13: challenge.issued events must update projection state."""
+        events = [
+            _make_event("e1", "crew.started", payload={"goal": "test"}),
+            _make_event(
+                "e2",
+                "challenge.issued",
+                worker_id="w1",
+                round_id="r1",
+                payload={"finding": "bad code", "category": "review"},
+                sequence=2,
+            ),
+        ]
+        proj = CrewStateProjection.from_events(events)
+        assert len(proj.challenges) == 1
+        assert proj.challenges[0]["finding"] == "bad code"
+        assert proj.challenges[0]["category"] == "review"
+
+    def test_repair_requested_tracked_as_challenge(self) -> None:
+        """H13: repair.requested events must be tracked in challenges."""
+        events = [
+            _make_event("e1", "crew.started", payload={"goal": "test"}),
+            _make_event(
+                "e2",
+                "repair.requested",
+                worker_id="w1",
+                round_id="r1",
+                payload={"instruction": "fix it"},
+                sequence=2,
+            ),
+        ]
+        proj = CrewStateProjection.from_events(events)
+        assert len(proj.challenges) == 1
+        assert proj.challenges[0]["category"] == "repair"
+
+    def test_review_completed_tracked_in_projection(self) -> None:
+        """H13: review.completed events must update projection state."""
+        events = [
+            _make_event("e1", "crew.started", payload={"goal": "test"}),
+            _make_event(
+                "e2",
+                "review.completed",
+                worker_id="w1",
+                turn_id="t1",
+                payload={"status": "ok", "summary": "looks good"},
+                sequence=2,
+            ),
+        ]
+        proj = CrewStateProjection.from_events(events)
+        assert len(proj.reviews) == 1
+        assert proj.reviews[0]["status"] == "ok"
+        assert proj.reviews[0]["summary"] == "looks good"
+
+    def test_new_fields_in_to_read_crew_dict(self) -> None:
+        """H13: to_read_crew_dict must include challenges, verifications, reviews."""
+        events = [
+            _make_event("e1", "crew.started", payload={"goal": "test"}),
+            _make_event(
+                "e2",
+                "verification.passed",
+                worker_id="w1",
+                payload={"command": "pytest"},
+                sequence=2,
+            ),
+            _make_event(
+                "e3",
+                "challenge.issued",
+                worker_id="w1",
+                payload={"finding": "issue"},
+                sequence=3,
+            ),
+            _make_event(
+                "e4",
+                "review.completed",
+                worker_id="w1",
+                payload={"status": "ok"},
+                sequence=4,
+            ),
+        ]
+        proj = CrewStateProjection.from_events(events)
+        d = proj.to_read_crew_dict()
+        assert "challenges" in d
+        assert "verifications" in d
+        assert "reviews" in d
+        assert len(d["verifications"]) == 1
+        assert len(d["challenges"]) == 1
+        assert len(d["reviews"]) == 1
 
 
 class TestExtractTrailingId:

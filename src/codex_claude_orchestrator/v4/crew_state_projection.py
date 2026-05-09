@@ -29,6 +29,9 @@ class CrewStateProjection:
     worker_contracts: list[dict] = field(default_factory=list)
     known_pitfalls: list[dict] = field(default_factory=list)
     artifacts: list[str] = field(default_factory=list)
+    challenges: list[dict] = field(default_factory=list)
+    verifications: list[dict] = field(default_factory=list)
+    reviews: list[dict] = field(default_factory=list)
 
     @classmethod
     def from_events(cls, events: list[AgentEvent]) -> CrewStateProjection:
@@ -189,6 +192,57 @@ class CrewStateProjection:
                         },
                     }
                 )
+            case "verification.passed":
+                self.verifications.append(
+                    {
+                        "worker_id": event.worker_id,
+                        "round_id": event.round_id,
+                        "command": event.payload.get("command", ""),
+                        "passed": True,
+                        "created_at": event.created_at,
+                    }
+                )
+            case "verification.failed":
+                self.verifications.append(
+                    {
+                        "worker_id": event.worker_id,
+                        "round_id": event.round_id,
+                        "command": event.payload.get("command", ""),
+                        "passed": False,
+                        "created_at": event.created_at,
+                    }
+                )
+            case "challenge.issued":
+                self.challenges.append(
+                    {
+                        "worker_id": event.worker_id,
+                        "round_id": event.round_id,
+                        "finding": event.payload.get("finding", ""),
+                        "category": event.payload.get("category", ""),
+                        "severity": event.payload.get("severity", ""),
+                        "created_at": event.created_at,
+                    }
+                )
+            case "repair.requested":
+                self.challenges.append(
+                    {
+                        "worker_id": event.worker_id,
+                        "round_id": event.round_id,
+                        "instruction": event.payload.get("instruction", ""),
+                        "category": "repair",
+                        "created_at": event.created_at,
+                    }
+                )
+            case "review.completed":
+                self.reviews.append(
+                    {
+                        "worker_id": event.worker_id,
+                        "turn_id": event.turn_id,
+                        "status": event.payload.get("status", ""),
+                        "summary": event.payload.get("summary", ""),
+                        "created_at": event.created_at,
+                    }
+                )
 
     def _update_worker(self, worker_id: str, updates: dict) -> None:
         for worker in self.workers:
@@ -220,6 +274,9 @@ class CrewStateProjection:
             if self.crew.get("ended_at")
             else None,
             "artifacts": self.artifacts,
+            "challenges": self.challenges,
+            "verifications": self.verifications,
+            "reviews": self.reviews,
         }
 
     def has_events(self) -> bool:
