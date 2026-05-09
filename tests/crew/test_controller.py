@@ -825,6 +825,70 @@ def test_challenge_writes_blackboard_entry(tmp_path: Path):
     assert challenge_entry["confidence"] == 0.9
 
 
+class TestEnsureWorkerConcurrency:
+    """H12: ensure_worker read-modify-write race test."""
+
+    def test_concurrent_ensure_workers_do_not_lose_tasks(self, tmp_path: Path):
+        """Two concurrent ensure_worker() calls must both persist their task."""
+        import threading
+
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        recorder = CrewRecorder(repo_root / ".orchestrator")
+        pool = FakeWorkerPool()
+        controller = CrewController(
+            recorder=recorder,
+            blackboard=BlackboardStore(recorder),
+            task_graph=TaskGraphPlanner(),
+            worker_pool=pool,
+            crew_id_factory=lambda: "crew-1",
+        )
+        crew = controller.start_dynamic(repo_root=repo_root, goal="concurrent test")
+
+        contract_a = WorkerContract(
+            contract_id="contract-a",
+            label="worker-a",
+            mission="task A",
+            required_capabilities=["inspect_code"],
+        )
+        contract_b = WorkerContract(
+            contract_id="contract-b",
+            label="worker-b",
+            mission="task B",
+            required_capabilities=["inspect_code"],
+        )
+
+        barrier = threading.Barrier(2, timeout=10)
+        errors: list[Exception] = []
+
+        def _run(contract):
+            try:
+                # Each thread waits at the barrier so both start ensure_worker
+                # at roughly the same time, triggering the race.
+                barrier.wait()
+                controller.ensure_worker(
+                    repo_root=repo_root,
+                    crew_id=crew.crew_id,
+                    contract=contract,
+                )
+            except Exception as exc:
+                errors.append(exc)
+
+        t_a = threading.Thread(target=_run, args=(contract_a,))
+        t_b = threading.Thread(target=_run, args=(contract_b,))
+        t_a.start()
+        t_b.start()
+        t_a.join()
+        t_b.join()
+
+        assert errors == [], f"Unexpected errors: {errors}"
+
+        details = recorder.read_crew(crew.crew_id)
+        task_ids = {t["task_id"] for t in details["tasks"]}
+        assert "task-contract-a" in task_ids, "task-contract-a lost — read-modify-write race detected (H12)"
+        assert "task-contract-b" in task_ids, "task-contract-b lost — read-modify-write race detected (H12)"
+
+
 def test_read_worker_allocation_raises_on_missing_artifact(tmp_path: Path):
     """_read_worker_allocation should raise FileNotFoundError when workspace_allocation_artifact missing."""
     repo_root = tmp_path / "repo"

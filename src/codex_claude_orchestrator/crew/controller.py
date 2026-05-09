@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path, PurePosixPath
 from uuid import uuid4
 
@@ -49,6 +50,7 @@ class CrewController:
         self._crew_id_factory = crew_id_factory or (lambda: f"crew-{uuid4().hex}")
         self._entry_id_factory = entry_id_factory or (lambda: f"entry-{uuid4().hex}")
         self._domain_events = DomainEventEmitter(event_store) if event_store else None
+        self._ensure_worker_lock = threading.Lock()
 
     def start(
         self,
@@ -160,12 +162,16 @@ class CrewController:
             allow_dirty_base=allow_dirty_base,
         )
         worker_payload = worker.to_dict() if hasattr(worker, "to_dict") else dict(worker)
-        tasks = [self._task_from_dict(item) for item in details.get("tasks", [])]
-        task.owner_worker_id = worker_payload["worker_id"]
-        task.status = CrewTaskStatus.ASSIGNED
-        tasks = [existing for existing in tasks if existing.task_id != task.task_id]
-        tasks.append(task)
-        self._recorder.write_tasks(crew_id, tasks)
+        # Lock the read-modify-write on tasks to prevent concurrent
+        # ensure_worker calls from silently losing each other's assignments.
+        with self._ensure_worker_lock:
+            details = self._recorder.read_crew(crew_id)
+            tasks = [self._task_from_dict(item) for item in details.get("tasks", [])]
+            task.owner_worker_id = worker_payload["worker_id"]
+            task.status = CrewTaskStatus.ASSIGNED
+            tasks = [existing for existing in tasks if existing.task_id != task.task_id]
+            tasks.append(task)
+            self._recorder.write_tasks(crew_id, tasks)
         if self._domain_events:
             self._domain_events.emit_task_created(crew_id, task.task_id, task.title)
         self.write_team_snapshot(
