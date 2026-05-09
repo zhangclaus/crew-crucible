@@ -10,11 +10,6 @@ from typing import Any
 from codex_claude_orchestrator.v4.event_store import SQLiteEventStore
 from codex_claude_orchestrator.v4.event_store_protocol import EventStore
 from codex_claude_orchestrator.v4.events import AgentEvent
-from codex_claude_orchestrator.v4.postgres_event_store import (
-    PostgresConfigurationError,
-    PostgresEventStore,
-    PostgresEventStoreConfig,
-)
 
 
 class EmptyEventStore:
@@ -60,48 +55,27 @@ def build_v4_event_store(
     env = environ or os.environ
     backend = env.get("V4_EVENT_STORE_BACKEND", "auto").strip().lower()
     if backend in {"auto", ""}:
-        return _build_auto(repo_root, readonly=readonly, environ=env)
+        return _build_legacy_sqlite(repo_root, readonly=readonly)
     if backend in {"postgres", "pg"}:
-        return _build_postgres(readonly=readonly, environ=env)
+        raise ValueError(
+            "The Postgres event store backend has been removed. "
+            "Use V4_EVENT_STORE_BACKEND=sqlite or leave unset for auto."
+        )
     if backend in {"sqlite", "legacy_sqlite", "legacy-sqlite"}:
         return _build_legacy_sqlite(repo_root, readonly=readonly)
     raise ValueError(f"unsupported V4 event store backend: {backend}")
-
-
-def _build_auto(
-    repo_root: Path,
-    *,
-    readonly: bool,
-    environ: Mapping[str, str],
-):
-    try:
-        return _build_postgres(readonly=readonly, environ=environ)
-    except PostgresConfigurationError:
-        return _build_legacy_sqlite(repo_root, readonly=readonly, empty_when_missing=True)
-
-
-def _build_postgres(*, readonly: bool, environ: Mapping[str, str]):
-    config = PostgresEventStoreConfig.from_env(environ)
-    config.connect_kwargs()
-    store = PostgresEventStore(config)
-    if not readonly:
-        store.initialize()
-    return store
 
 
 def _build_legacy_sqlite(
     repo_root: Path,
     *,
     readonly: bool,
-    empty_when_missing: bool = True,
 ):
     path = repo_root.resolve() / ".orchestrator" / "v4" / "events.sqlite3"
     if readonly:
         if not path.exists():
             return EmptyEventStore()
         return SQLiteEventStore.open_existing(path)
-    if empty_when_missing and readonly:
-        return EmptyEventStore()
     return SQLiteEventStore(path)
 
 

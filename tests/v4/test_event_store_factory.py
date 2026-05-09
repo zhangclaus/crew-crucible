@@ -9,23 +9,6 @@ from codex_claude_orchestrator.v4.event_store_factory import (
     EmptyEventStore,
     build_v4_event_store,
 )
-from codex_claude_orchestrator.v4.postgres_event_store import PostgresEventStore
-
-
-def test_event_store_factory_returns_postgres_when_configured(tmp_path: Path) -> None:
-    store = build_v4_event_store(
-        tmp_path,
-        readonly=True,
-        environ={
-            "PG_HOST": "db.example.test",
-            "PG_DB": "agents",
-            "PG_USER": "runner",
-            "PG_PASSWORD": "secret",
-            "PG_PORT": "15432",
-        },
-    )
-
-    assert isinstance(store, PostgresEventStore)
 
 
 def test_event_store_factory_returns_empty_readonly_store_when_unconfigured(
@@ -77,4 +60,22 @@ def test_event_store_factory_unknown_backend_is_rejected(tmp_path: Path) -> None
             tmp_path,
             readonly=True,
             environ={"V4_EVENT_STORE_BACKEND": "redis"},
+        )
+
+
+def test_event_store_factory_postgres_backend_raises_removed_error(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="Postgres event store backend has been removed"):
+        build_v4_event_store(
+            tmp_path,
+            readonly=True,
+            environ={"V4_EVENT_STORE_BACKEND": "postgres"},
+        )
+
+
+def test_event_store_factory_pg_backend_raises_removed_error(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="Postgres event store backend has been removed"):
+        build_v4_event_store(
+            tmp_path,
+            readonly=True,
+            environ={"V4_EVENT_STORE_BACKEND": "pg"},
         )
