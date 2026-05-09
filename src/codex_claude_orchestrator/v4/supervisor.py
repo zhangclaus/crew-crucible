@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -200,7 +201,7 @@ class V4Supervisor:
         expected_marker: str,
         cancel_event: threading.Event | None = None,
     ) -> dict[str, str]:
-        self._workflow.start_crew(crew_id=crew_id, goal=goal)
+        await asyncio.to_thread(self._workflow.start_crew, crew_id=crew_id, goal=goal)
         context = self._build_turn_context(crew_id=crew_id, worker_id=worker_id)
         turn_id = f"{round_id}-{worker_id}-{phase}"
         required_outbox_path = self._prepare_required_outbox_path(
@@ -224,12 +225,12 @@ class V4Supervisor:
             open_protocol_requests_digest=context.get("open_protocol_requests_digest", ""),
         )
 
-        terminal_result = self._terminal_result(crew_id=crew_id, turn=turn)
+        terminal_result = await asyncio.to_thread(self._terminal_result, crew_id=crew_id, turn=turn)
         if terminal_result is not None:
             return terminal_result
 
-        delivery_result = self._turns.request_and_deliver(turn)
-        terminal_result = self._terminal_result(crew_id=crew_id, turn=turn)
+        delivery_result = await asyncio.to_thread(self._turns.request_and_deliver, turn)
+        terminal_result = await asyncio.to_thread(self._terminal_result, crew_id=crew_id, turn=turn)
         if terminal_result is not None:
             return terminal_result
 
@@ -252,7 +253,8 @@ class V4Supervisor:
             if not self._is_current_turn_event(turn, runtime_event):
                 continue
             event_payload = _runtime_event_payload_for_storage(runtime_event)
-            event = self._events.append(
+            event = await asyncio.to_thread(
+                self._events.append,
                 stream_id=crew_id,
                 type=runtime_event.type,
                 crew_id=crew_id,
@@ -267,17 +269,18 @@ class V4Supervisor:
                 payload=event_payload,
                 artifact_refs=runtime_event.artifact_refs,
             )
-            self._process_message_ack_if_configured(event)
+            await asyncio.to_thread(self._process_message_ack_if_configured, event)
             runtime_events.append(runtime_event)
             index += 1
-        self._commit_runtime_events_if_supported(turn, runtime_events)
+        await asyncio.to_thread(self._commit_runtime_events_if_supported, turn, runtime_events)
 
-        terminal_result = self._terminal_result(crew_id=crew_id, turn=turn)
+        terminal_result = await asyncio.to_thread(self._terminal_result, crew_id=crew_id, turn=turn)
         if terminal_result is not None:
             return terminal_result
 
         decision = self._completion.evaluate(turn, runtime_events)
-        terminal_event = self._events.append(
+        terminal_event = await asyncio.to_thread(
+            self._events.append,
             stream_id=crew_id,
             type=decision.event_type,
             crew_id=crew_id,
@@ -289,7 +292,7 @@ class V4Supervisor:
             payload={"reason": decision.reason},
             artifact_refs=decision.evidence_refs,
         )
-        self._evaluate_completed_turn_if_configured(terminal_event)
+        await asyncio.to_thread(self._evaluate_completed_turn_if_configured, terminal_event)
         if decision.event_type == "turn.completed":
             return {"crew_id": crew_id, "status": "turn_completed", "turn_id": turn.turn_id}
         return {

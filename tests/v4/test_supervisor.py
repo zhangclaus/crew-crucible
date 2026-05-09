@@ -1007,3 +1007,50 @@ class TestEvaluatorExceptionSafety:
             message="go", expected_marker="<<<DONE>>>",
         )
         assert result["status"] == "turn_completed"
+
+
+class TestAsyncRunWorkerTurnNonBlocking:
+    def test_async_run_does_not_block_event_loop(self, tmp_path: Path):
+        """H4: async_run_worker_turn must not block the event loop during sync calls."""
+        import asyncio
+        import time
+
+        call_order = []
+
+        class SlowAdapter(FakeAdapter):
+            def deliver_turn(self, turn):
+                call_order.append("deliver_start")
+                time.sleep(0.05)  # simulate blocking I/O
+                call_order.append("deliver_end")
+                return DeliveryResult(delivered=True, marker=turn.expected_marker, reason="sent")
+
+            async def async_watch_turn(self, turn, cancel_event=None):
+                call_order.append("watch_start")
+                yield completed_outbox_event(turn)
+                call_order.append("watch_end")
+
+        adapter = SlowAdapter()
+        store = SQLiteEventStore(tmp_path / "events.sqlite3")
+        supervisor = V4Supervisor(
+            event_store=store,
+            artifact_store=ArtifactStore(tmp_path / "artifacts"),
+            adapter=adapter,
+        )
+
+        async def run_two_workers():
+            results = await asyncio.gather(
+                supervisor.async_run_worker_turn(
+                    crew_id="c1", goal="test", worker_id="w1",
+                    round_id="r1", phase="source", contract_id="source_write",
+                    message="go", expected_marker="<<<DONE>>>",
+                ),
+                supervisor.async_run_worker_turn(
+                    crew_id="c1", goal="test", worker_id="w2",
+                    round_id="r1", phase="source", contract_id="source_write",
+                    message="go", expected_marker="<<<DONE>>>",
+                ),
+            )
+            return results
+
+        results = asyncio.run(run_two_workers())
+        assert all(r["status"] == "turn_completed" for r in results)
