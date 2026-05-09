@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import threading
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,8 @@ from codex_claude_orchestrator.v4.runtime import (
 )
 from codex_claude_orchestrator.v4.turns import TurnService
 from codex_claude_orchestrator.v4.workflow import V4WorkflowEngine
+
+logger = logging.getLogger(__name__)
 
 
 class V4Supervisor:
@@ -370,14 +373,14 @@ class V4Supervisor:
             try:
                 self._adversarial_evaluator.evaluate_completed_turn(event)
             except Exception:
-                pass  # evaluator failure must not abort turn result return
+                logger.debug("adversarial_evaluator.evaluate_completed_turn failed", exc_info=True)
 
     def _process_message_ack_if_configured(self, event: AgentEvent) -> None:
         if self._message_ack_processor is not None:
             try:
                 self._message_ack_processor.process(event)
             except Exception:
-                pass  # ack callback failure must not abort the event loop
+                logger.debug("message_ack_processor.process failed", exc_info=True)
 
     def _commit_runtime_events_if_supported(
         self,

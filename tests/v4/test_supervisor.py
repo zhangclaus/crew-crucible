@@ -252,7 +252,7 @@ def test_v4_supervisor_invokes_adversarial_evaluator_after_turn_completed(tmp_pa
     assert [event.type for event in evaluator.completed_events] == ["turn.completed"]
 
 
-def test_v4_supervisor_retries_adversarial_evaluator_for_existing_completed_turn(
+def test_adversarial_evaluator_invoked_again_on_resume_after_prior_failure(
     tmp_path: Path,
 ):
     store = SQLiteEventStore(tmp_path / "events.sqlite3")
