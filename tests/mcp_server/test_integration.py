@@ -33,13 +33,6 @@ def test_server_registers_all_tool_modules():
     assert "crew_stop_worker" in registered_names
     assert "crew_verify" in registered_names
 
-    # Context tools
-    assert "crew_blackboard" in registered_names
-    assert "crew_events" in registered_names
-    assert "crew_observe" in registered_names
-    assert "crew_changes" in registered_names
-    assert "crew_diff" in registered_names
-
     # Decision tools
     assert "crew_accept" in registered_names
     assert "crew_challenge" in registered_names
@@ -47,6 +40,11 @@ def test_server_registers_all_tool_modules():
     # Deleted tools
     assert "crew_run" not in registered_names
     assert "crew_decide" not in registered_names
+    assert "crew_blackboard" not in registered_names
+    assert "crew_events" not in registered_names
+    assert "crew_observe" not in registered_names
+    assert "crew_changes" not in registered_names
+    assert "crew_diff" not in registered_names
 
 
 def test_server_no_tools_when_no_controller():
