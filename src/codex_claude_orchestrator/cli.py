@@ -229,6 +229,7 @@ def parse_worker_roles(value: str) -> list[WorkerRole]:
 def run_doctor(registry: AgentRegistry) -> dict[str, object]:
     python_ok = sys.version_info >= (3, 11)
     claude_path = shutil.which("claude")
+    tmux_path = shutil.which("tmux")
     return {
         "python": {
             "ok": python_ok,
@@ -238,6 +239,10 @@ def run_doctor(registry: AgentRegistry) -> dict[str, object]:
         "claude_cli": {
             "ok": claude_path is not None,
             "path": claude_path,
+        },
+        "tmux": {
+            "ok": tmux_path is not None,
+            "path": tmux_path,
         },
         "agents": [profile.to_dict() for profile in registry.list_profiles()],
     }
@@ -282,7 +287,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if root_command == "doctor":
         result = run_doctor(registry)
         print(json.dumps(result, ensure_ascii=False))
-        all_ok = result["python"]["ok"] and result["claude_cli"]["ok"]
+        all_ok = result["python"]["ok"] and result["claude_cli"]["ok"] and result["tmux"]["ok"]
         return 0 if all_ok else 1
 
     if root_command == "init":
