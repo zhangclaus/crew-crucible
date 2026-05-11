@@ -537,3 +537,77 @@ class TestMergeStageResultsLogging:
                 )
 
         assert any("git apply" in record.message for record in caplog.records)
+
+
+class TestRunSubTasksWriteScope:
+    PATCH_TARGET = "codex_claude_orchestrator.v4.crew_runner.V4CrewRunner"
+
+    def test_passes_write_scope_to_runner(self):
+        """_run_sub_tasks should pass subtask write_scope to V4CrewRunner."""
+        supervisor = LongTaskSupervisor.__new__(LongTaskSupervisor)
+        supervisor.controller = MagicMock()
+        supervisor.supervisor = MagicMock()
+        supervisor.event_store = FakeEventStore()
+        supervisor.repo_root = Path("/tmp/test")
+        supervisor.verification_commands = ["pytest"]
+        supervisor.max_rounds = 1
+        supervisor._crew_id = "c1"
+
+        stage = StagePlan(
+            stage_id=1, goal="test", acceptance_criteria=["pass"],
+            contract=Contract(), sub_tasks=[
+                SubTaskRef(
+                    task_id="1a", role="dev", goal="implement",
+                    write_scope=["src/api/auth.py", "src/models/user.py"],
+                ),
+            ], dependencies=[],
+        )
+
+        mock_runner = MagicMock()
+        mock_runner.supervise.return_value = {"status": "done"}
+
+        briefing = supervisor.build_briefing(stage, [], make_think_result())
+        with unittest.mock.patch(self.PATCH_TARGET, return_value=mock_runner):
+            supervisor._run_sub_tasks(stage, briefing)
+
+        mock_runner.supervise.assert_called_once()
+
+    def test_write_scope_reaches_contract(self):
+        """Verify write_scope from SubTaskRef ends up in the seed_contract."""
+        supervisor = LongTaskSupervisor.__new__(LongTaskSupervisor)
+        supervisor.controller = MagicMock()
+        supervisor.supervisor = MagicMock()
+        supervisor.event_store = FakeEventStore()
+        supervisor.repo_root = Path("/tmp/test")
+        supervisor.verification_commands = ["pytest"]
+        supervisor.max_rounds = 1
+        supervisor._crew_id = "c1"
+
+        write_scope = ["src/api/auth.py", "src/models/user.py"]
+        stage = StagePlan(
+            stage_id=1, goal="test", acceptance_criteria=["pass"],
+            contract=Contract(), sub_tasks=[
+                SubTaskRef(
+                    task_id="1a", role="dev", goal="implement",
+                    write_scope=write_scope,
+                ),
+            ], dependencies=[],
+        )
+
+        captured_contracts = []
+
+        def fake_supervise(**kwargs):
+            captured_contracts.append(kwargs.get("seed_contract"))
+            return {"status": "done"}
+
+        mock_runner = MagicMock()
+        mock_runner.supervise.side_effect = fake_supervise
+
+        briefing = supervisor.build_briefing(stage, [], make_think_result())
+        with unittest.mock.patch(self.PATCH_TARGET, return_value=mock_runner):
+            supervisor._run_sub_tasks(stage, briefing)
+
+        assert len(captured_contracts) == 1
+        contract = captured_contracts[0]
+        assert contract is not None
+        assert contract.write_scope == write_scope

@@ -524,6 +524,21 @@ class LongTaskSupervisor:
         results = []
 
         def _run_one(sub_task: SubTaskRef) -> dict[str, Any]:
+            from codex_claude_orchestrator.crew.models import (
+                AuthorityLevel,
+                WorkerContract,
+                WorkspacePolicy,
+            )
+
+            contract = WorkerContract(
+                contract_id=f"contract-{sub_task.task_id}",
+                label=sub_task.role or "worker",
+                mission=sub_task.goal,
+                authority_level=AuthorityLevel.SOURCE_WRITE,
+                workspace_policy=WorkspacePolicy.WORKTREE,
+                write_scope=sub_task.write_scope,
+            )
+
             runner = V4CrewRunner(
                 controller=self.controller,
                 supervisor=self.supervisor,
@@ -534,6 +549,7 @@ class LongTaskSupervisor:
                 crew_id=self._crew_id,
                 verification_commands=self.verification_commands,
                 max_rounds=self.max_rounds,
+                seed_contract=contract,
             )
 
         with ThreadPoolExecutor(max_workers=min(len(stage.sub_tasks), 4)) as pool:
