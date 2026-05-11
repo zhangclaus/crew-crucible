@@ -32,6 +32,7 @@ def register_run_tools(
         parallel: bool = False,
         max_workers: int = 3,
         subtasks: list[dict[str, str]] | None = None,
+        long_task: bool = False,
     ) -> list[TextContent]:
         """Start a crew job in the background (non-blocking).
 
@@ -53,6 +54,8 @@ def register_run_tools(
                 description, scope (list of paths). When provided with
                 parallel=True, these are used instead of the default
                 single-subtask split.
+            long_task: Enable long task mode with multi-stage execution
+                (default False). When True, delegates to LongTaskSupervisor.
         """
         if runner is None:
             if repo not in _runner_cache:
@@ -71,6 +74,7 @@ def register_run_tools(
             parallel=parallel,
             max_workers=max_workers,
             subtasks=subtasks,
+            long_task=long_task,
         )
 
         return [

@@ -68,7 +68,17 @@ class V4CrewRunner:
         seed_contract: str | None = None,
         progress_callback: Callable[[str, int, int], None] | None = None,
         cancel_event: threading.Event | None = None,
+        long_task: bool = False,
     ) -> dict[str, Any]:
+        if long_task:
+            return self._run_long_task(
+                repo_root=repo_root,
+                goal=goal,
+                verification_commands=verification_commands,
+                max_rounds=max_rounds,
+                cancel_event=cancel_event,
+                progress_callback=progress_callback,
+            )
         if spawn_policy == "dynamic":
             crew = self._controller.start_dynamic(repo_root=repo_root, goal=goal)
             return self.supervise(
@@ -103,6 +113,30 @@ class V4CrewRunner:
             progress_callback=progress_callback,
             cancel_event=cancel_event,
         )
+
+    def _run_long_task(
+        self,
+        *,
+        repo_root: Path,
+        goal: str,
+        verification_commands: list[str],
+        max_rounds: int,
+        cancel_event: threading.Event | None,
+        progress_callback: Callable[[str, int, int], None] | None,
+    ) -> dict[str, Any]:
+        """Delegate to LongTaskSupervisor for multi-stage execution."""
+        from codex_claude_orchestrator.v4.long_task_supervisor import LongTaskSupervisor
+
+        supervisor = LongTaskSupervisor(
+            controller=self._controller,
+            supervisor=self._supervisor,
+            event_store=self._events,
+            repo_root=repo_root,
+            goal=goal,
+            verification_commands=verification_commands,
+            max_rounds=max_rounds,
+        )
+        return supervisor.supervise_long_task()
 
     def supervise(
         self,

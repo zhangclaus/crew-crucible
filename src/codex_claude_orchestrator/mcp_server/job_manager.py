@@ -78,6 +78,7 @@ class JobManager:
         parallel: bool = False,
         max_workers: int = 3,
         subtasks: list[dict[str, str]] | None = None,
+        long_task: bool = False,
     ) -> str:
         """Create a job, start background thread, return job_id."""
         if self._shutdown_event.is_set():
@@ -123,7 +124,7 @@ class JobManager:
                         cancel_event=job.cancel_event,
                     )
                 else:
-                    result = runner.run(
+                    run_kwargs: dict[str, Any] = dict(
                         repo_root=repo_root,
                         goal=goal,
                         verification_commands=verification_commands or ["echo ok"],
@@ -133,6 +134,9 @@ class JobManager:
                         ),
                         cancel_event=job.cancel_event,
                     )
+                    if long_task:
+                        run_kwargs["long_task"] = True
+                    result = runner.run(**run_kwargs)
                 with self._lock:
                     if job.status != "cancelled":
                         job.status = "done"
