@@ -401,3 +401,187 @@ class TestCheckItem:
         assert d["status"] == "pass"
         ci2 = CheckItem.from_dict(d)
         assert ci2.criterion == "RS256"
+
+    def test_check_item_defaults(self):
+        ci = CheckItem(criterion="X", status="pass")
+        assert ci.note == ""
+
+
+# --- Default-value tests ---
+
+
+class TestDataModelDefaults:
+    def test_data_model_default_fields(self):
+        dm = DataModel(name="X")
+        assert dm.fields == {}
+
+
+class TestStagePlanDefaults:
+    def test_stage_plan_default_dependencies(self):
+        sp = StagePlan(
+            stage_id=1,
+            goal="test",
+            acceptance_criteria=["ac1"],
+            contract=Contract(),
+            sub_tasks=[],
+        )
+        assert sp.dependencies == []
+
+
+class TestThinkResultDefaults:
+    def test_think_result_default_open_questions(self):
+        tr = ThinkResult(
+            spec="test",
+            stages=[],
+            contract=Contract(),
+            project_context=ProjectContext(),
+            acceptance_criteria=["ac1"],
+        )
+        assert tr.open_questions == []
+
+
+class TestReviewVerdictDefaults:
+    def test_review_verdict_default_optional_fields(self):
+        rv = ReviewVerdict(
+            verdict="OK",
+            checklist=[],
+            quality_notes=[],
+            risks=[],
+            suggestions=[],
+            contract_compliance=[],
+            cross_worker_issues=[],
+            action="pass",
+        )
+        assert rv.challenge_targets is None
+        assert rv.replan_reason is None
+        assert rv.stage_summary == ""
+
+
+class TestChallengeTargetDefaults:
+    def test_challenge_target_default_affected_files(self):
+        ct = ChallengeTarget(worker_id="X", challenge_message="Y")
+        assert ct.affected_files == []
+
+
+class TestPlanAdversaryVerdictDefaults:
+    def test_plan_adversary_verdict_default_summary(self):
+        pv = PlanAdversaryVerdict(verdict="pass", issues=[], auto_fixes=[])
+        assert pv.summary == ""
+
+
+class TestPlanIssueDefaults:
+    def test_plan_issue_default_suggestion(self):
+        pi = PlanIssue(category="X", severity="Y", location="Z", description="W")
+        assert pi.suggestion == ""
+
+
+class TestAutoFixDefaults:
+    def test_auto_fix_default_reason(self):
+        af = AutoFix(location="X", current_value=None, suggested_value=None)
+        assert af.reason == ""
+
+
+# --- Edge-case tests ---
+
+
+class TestReviewVerdictEdgeCases:
+    def test_from_dict_challenge_targets_absent(self):
+        """When 'challenge_targets' key is missing, the field should be None."""
+        d = {
+            "verdict": "OK",
+            "checklist": [],
+            "quality_notes": [],
+            "risks": [],
+            "suggestions": [],
+            "contract_compliance": [],
+            "cross_worker_issues": [],
+            "action": "pass",
+        }
+        rv = ReviewVerdict.from_dict(d)
+        assert rv.challenge_targets is None
+
+    def test_from_dict_challenge_targets_none(self):
+        """When 'challenge_targets' key is present but None, the field should be None."""
+        d = {
+            "verdict": "OK",
+            "checklist": [],
+            "quality_notes": [],
+            "risks": [],
+            "suggestions": [],
+            "contract_compliance": [],
+            "cross_worker_issues": [],
+            "action": "pass",
+            "challenge_targets": None,
+        }
+        rv = ReviewVerdict.from_dict(d)
+        assert rv.challenge_targets is None
+
+    def test_from_dict_challenge_targets_empty_list(self):
+        """When 'challenge_targets' is an empty list, the field should be []."""
+        d = {
+            "verdict": "OK",
+            "checklist": [],
+            "quality_notes": [],
+            "risks": [],
+            "suggestions": [],
+            "contract_compliance": [],
+            "cross_worker_issues": [],
+            "action": "pass",
+            "challenge_targets": [],
+        }
+        rv = ReviewVerdict.from_dict(d)
+        assert rv.challenge_targets == []
+
+
+class TestFromDictEmptyLists:
+    def test_contract_from_dict_empty_lists(self):
+        d = {
+            "api_endpoints": [],
+            "data_models": [],
+            "shared_types": [],
+            "conventions": [],
+        }
+        c = Contract.from_dict(d)
+        assert c.api_endpoints == []
+        assert c.data_models == []
+        assert c.shared_types == []
+        assert c.conventions == []
+
+    def test_stage_plan_from_dict_empty_subtasks(self):
+        d = {
+            "stage_id": 1,
+            "goal": "test",
+            "acceptance_criteria": [],
+            "contract": {"api_endpoints": [], "data_models": [], "shared_types": [], "conventions": []},
+            "sub_tasks": [],
+            "dependencies": [],
+        }
+        sp = StagePlan.from_dict(d)
+        assert sp.sub_tasks == []
+        assert sp.dependencies == []
+        assert sp.acceptance_criteria == []
+
+    def test_think_result_from_dict_empty_lists(self):
+        d = {
+            "spec": "test",
+            "stages": [],
+            "contract": {"api_endpoints": [], "data_models": [], "shared_types": [], "conventions": []},
+            "project_context": {"structure": "", "existing_patterns": [], "tech_stack": [], "related_files": [], "constraints": []},
+            "acceptance_criteria": [],
+            "open_questions": [],
+        }
+        tr = ThinkResult.from_dict(d)
+        assert tr.stages == []
+        assert tr.open_questions == []
+        assert tr.acceptance_criteria == []
+
+    def test_plan_adversary_verdict_from_dict_empty_lists(self):
+        d = {"verdict": "pass", "issues": [], "auto_fixes": []}
+        pv = PlanAdversaryVerdict.from_dict(d)
+        assert pv.issues == []
+        assert pv.auto_fixes == []
+
+    def test_challenge_target_from_dict_empty_affected_files(self):
+        d = {"worker_id": "w1", "challenge_message": "msg", "affected_files": []}
+        ct = ChallengeTarget.from_dict(d)
+        assert ct.affected_files == []
