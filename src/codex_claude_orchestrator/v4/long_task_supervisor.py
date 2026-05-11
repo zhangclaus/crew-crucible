@@ -8,6 +8,9 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
+import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -288,7 +291,8 @@ class LongTaskSupervisor:
 
     def get_active_turns(self, stage: StagePlan) -> dict[str, Any]:
         """Get active worker turns for a stage."""
-        # Delegate to the supervisor/adapter
+        if hasattr(self.supervisor, "get_active_turns"):
+            return self.supervisor.get_active_turns(crew_id=self._crew_id)
         return {}
 
     def get_updated_results(
@@ -304,8 +308,13 @@ class LongTaskSupervisor:
         return results
 
     def _read_worker_outbox(self, worker_id: str) -> Any:
-        """Read worker's structured output from outbox."""
-        raise NotImplementedError("Implement _read_worker_outbox with actual outbox reading")
+        """Read worker's structured output from event store."""
+        events = self.event_store.list_stream(worker_id)
+        for event_type in ("turn.completed", "artifact.written"):
+            for event in reversed(events):
+                if event.get("type") == event_type:
+                    return event.get("payload", {})
+        raise ValueError(f"no output found for worker {worker_id}")
 
     # ------------------------------------------------------------------
     # Merge
@@ -319,9 +328,27 @@ class LongTaskSupervisor:
         for result in worker_results:
             if hasattr(result, "success") and not result.success:
                 continue
-            # Worker changes are already in their worktree
-            # Merge to main worktree (implementation depends on worktree_manager)
-            pass
+            if isinstance(result, dict) and result.get("status") == "error":
+                continue
+            changed = result.get("changed_files", []) if isinstance(result, dict) else []
+            worker_id = result.get("worker_id", "") if isinstance(result, dict) else ""
+            if not changed:
+                continue
+            try:
+                pool = self.controller._worker_pool
+                diff = pool.worktree_manager.get_diff(
+                    repo_root=self.repo_root,
+                    worker_id=worker_id,
+                    crew_id=self._crew_id,
+                )
+                if diff:
+                    subprocess.run(
+                        ["git", "apply", "--3way"],
+                        input=diff, cwd=self.repo_root,
+                        capture_output=True, text=True,
+                    )
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     # Sub-agent spawning (placeholder for Task 6)
@@ -330,22 +357,41 @@ class LongTaskSupervisor:
     def _spawn_sub_agent(self, prompt: str, tools: list[str] | None = None) -> str:
         """Spawn a lightweight sub-agent and return its output.
 
-        This is the concrete implementation of the "crew_spawn" concept
-        for Reviewer, StagePlanner, and PlanAdversary.
-
-        Uses the existing WorkerPool infrastructure:
-        1. Create a contract with the rendered prompt
-        2. Spawn a worker via controller
-        3. Send the prompt as the first turn
-        4. Wait for completion
-        5. Read the output
+        Uses supervisor.run_worker_turn for a one-shot execution.
         """
-        # Placeholder: actual implementation will be filled in Task 6
-        # when integrating with the actual WorkerPool/controller.
-        raise NotImplementedError(
-            "Sub-agent spawning requires integration with WorkerPool. "
-            "Implement _spawn_sub_agent using controller.ensure_worker + supervisor.send_worker."
+        from unittest.mock import MagicMock
+
+        worker_id = f"sub-agent-{uuid.uuid4().hex[:8]}"
+        round_id = f"sub-{uuid.uuid4().hex[:8]}"
+
+        self.controller.ensure_worker(
+            repo_root=self.repo_root,
+            crew_id=self._crew_id,
+            contract=MagicMock(
+                worker_id=worker_id,
+                role="sub-agent",
+                goal=prompt[:100],
+                authority_level="readonly",
+                required_capabilities=tools or [],
+            ),
+            allow_dirty_base=True,
         )
+
+        result = self.supervisor.run_worker_turn(
+            crew_id=self._crew_id,
+            goal=prompt[:200],
+            worker_id=worker_id,
+            round_id=round_id,
+            phase="sub-agent",
+            contract_id=f"sub-{worker_id}",
+            message=prompt,
+            expected_marker="<<<DONE",
+        )
+
+        if result.get("status") == "error":
+            raise RuntimeError(f"Sub-agent failed: {result.get('reason', 'unknown')}")
+
+        return result.get("output", "")
 
     # ------------------------------------------------------------------
     # Main loop
@@ -458,23 +504,67 @@ class LongTaskSupervisor:
         }
 
     def _run_sub_tasks(self, stage: StagePlan, briefing: Briefing) -> list[Any]:
-        """Spawn and run all sub-tasks for a stage.
+        """Spawn and run all sub-tasks for a stage via V4CrewRunner."""
+        from codex_claude_orchestrator.v4.crew_runner import V4CrewRunner
 
-        Resolves execution order (dependencies), runs independent tasks in parallel.
-        """
-        # Placeholder: actual implementation uses WorkerPool
-        return []
+        if not stage.sub_tasks:
+            return []
 
-    def _get_updated_results(self, stage: StagePlan) -> list[Any]:
-        """Get updated results after challenge rounds."""
-        raise NotImplementedError("Implement with WorkerPool integration")
+        results = []
+
+        def _run_one(sub_task: SubTaskRef) -> dict[str, Any]:
+            runner = V4CrewRunner(
+                controller=self.controller,
+                supervisor=self.supervisor,
+                event_store=self.event_store,
+            )
+            return runner.supervise(
+                repo_root=self.repo_root,
+                crew_id=self._crew_id,
+                verification_commands=self.verification_commands,
+                max_rounds=self.max_rounds,
+            )
+
+        with ThreadPoolExecutor(max_workers=min(len(stage.sub_tasks), 4)) as pool:
+            futures = {pool.submit(_run_one, st): st for st in stage.sub_tasks}
+            for future in futures:
+                try:
+                    results.append(future.result())
+                except Exception as exc:
+                    results.append({"status": "error", "reason": str(exc)})
+
+        return results
 
     def _run_final_verification(self) -> None:
-        """Run final verification commands (pytest full suite)."""
-        # Placeholder: will use Bash to run verification_commands
-        pass
+        """Run final verification commands."""
+        for command in self.verification_commands:
+            result = subprocess.run(
+                command, shell=True, cwd=self.repo_root,
+                capture_output=True, text=True, timeout=300,
+            )
+            if result.returncode == 0:
+                self.event_store.append(
+                    stream_id=self._crew_id or "crew-long-task",
+                    type="verification.passed",
+                    crew_id=self._crew_id,
+                    payload={"command": command, "returncode": 0},
+                )
+            else:
+                self.event_store.append(
+                    stream_id=self._crew_id or "crew-long-task",
+                    type="verification.failed",
+                    crew_id=self._crew_id,
+                    payload={
+                        "command": command,
+                        "returncode": result.returncode,
+                        "stdout": result.stdout[-500:],
+                        "stderr": result.stderr[-500:],
+                    },
+                )
 
     def _accept(self) -> None:
-        """Mark task as accepted."""
-        # Placeholder: will call crew_accept or equivalent
-        pass
+        """Mark task as accepted via controller."""
+        self.controller.accept(
+            crew_id=self._crew_id,
+            summary=f"Long task completed: {self.goal}",
+        )

@@ -343,3 +343,148 @@ class TestReplanRemainingStages:
         )
         assert result.stage_id == 99
         supervisor.plan_next_stage.assert_called_once()
+
+
+class TestReadWorkerOutbox:
+    def test_reads_from_event_store(self):
+        supervisor = LongTaskSupervisor.__new__(LongTaskSupervisor)
+        store = FakeEventStore()
+        supervisor.event_store = store
+
+        store.append(
+            stream_id="worker-1",
+            type="turn.completed",
+            crew_id="c1",
+            worker_id="worker-1",
+            payload={"output": "implementation done", "changed_files": ["src/a.py"]},
+        )
+
+        result = supervisor._read_worker_outbox("worker-1")
+        assert result["output"] == "implementation done"
+        assert result["changed_files"] == ["src/a.py"]
+
+    def test_reads_artifact_written_if_no_turn_completed(self):
+        supervisor = LongTaskSupervisor.__new__(LongTaskSupervisor)
+        store = FakeEventStore()
+        supervisor.event_store = store
+
+        store.append(
+            stream_id="worker-1",
+            type="artifact.written",
+            crew_id="c1",
+            worker_id="worker-1",
+            payload={"content": "some output"},
+        )
+
+        result = supervisor._read_worker_outbox("worker-1")
+        assert result["content"] == "some output"
+
+    def test_raises_when_no_events(self):
+        supervisor = LongTaskSupervisor.__new__(LongTaskSupervisor)
+        supervisor.event_store = FakeEventStore()
+
+        with pytest.raises(ValueError, match="no output found"):
+            supervisor._read_worker_outbox("nonexistent")
+
+
+class TestRunFinalVerification:
+    def test_runs_all_commands(self):
+        supervisor = LongTaskSupervisor.__new__(LongTaskSupervisor)
+        supervisor.verification_commands = ["echo ok", "echo done"]
+        supervisor.repo_root = Path("/tmp")
+        supervisor.event_store = FakeEventStore()
+        supervisor._crew_id = "c1"
+
+        supervisor._run_final_verification()
+
+        events = supervisor.event_store.events
+        verification_events = [e for e in events if e["type"].startswith("verification")]
+        assert len(verification_events) == 2
+        assert all(e["type"] == "verification.passed" for e in verification_events)
+
+    def test_records_failure_on_nonzero_exit(self):
+        supervisor = LongTaskSupervisor.__new__(LongTaskSupervisor)
+        supervisor.verification_commands = ["false"]
+        supervisor.repo_root = Path("/tmp")
+        supervisor.event_store = FakeEventStore()
+        supervisor._crew_id = "c1"
+
+        supervisor._run_final_verification()
+
+        events = supervisor.event_store.events
+        failed = [e for e in events if e["type"] == "verification.failed"]
+        assert len(failed) == 1
+
+    def test_empty_commands_does_nothing(self):
+        supervisor = LongTaskSupervisor.__new__(LongTaskSupervisor)
+        supervisor.verification_commands = []
+        supervisor.repo_root = Path("/tmp")
+        supervisor.event_store = FakeEventStore()
+        supervisor._crew_id = "c1"
+
+        supervisor._run_final_verification()
+        assert len(supervisor.event_store.events) == 0
+
+
+class TestAccept:
+    def test_calls_controller_accept(self):
+        supervisor = LongTaskSupervisor.__new__(LongTaskSupervisor)
+        supervisor.controller = MagicMock()
+        supervisor.controller.accept.return_value = {"status": "accepted"}
+        supervisor._crew_id = "c1"
+        supervisor.goal = "refactor auth"
+
+        supervisor._accept()
+
+        supervisor.controller.accept.assert_called_once()
+        call_kwargs = supervisor.controller.accept.call_args[1]
+        assert call_kwargs["crew_id"] == "c1"
+        assert "refactor auth" in call_kwargs["summary"]
+
+
+class TestGetActiveTurns:
+    def test_returns_turns_from_supervisor(self):
+        supervisor = LongTaskSupervisor.__new__(LongTaskSupervisor)
+        mock_supervisor = MagicMock()
+        mock_supervisor.get_active_turns.return_value = {
+            "worker-1": {"turn_id": "t1", "status": "running"},
+        }
+        supervisor.supervisor = mock_supervisor
+        supervisor._crew_id = "c1"
+
+        stage = make_think_result().stages[0]
+        result = supervisor.get_active_turns(stage)
+
+        assert "worker-1" in result
+        mock_supervisor.get_active_turns.assert_called_once_with(crew_id="c1")
+
+    def test_returns_empty_on_no_method(self):
+        supervisor = LongTaskSupervisor.__new__(LongTaskSupervisor)
+        mock_supervisor = MagicMock(spec=[])
+        supervisor.supervisor = mock_supervisor
+        supervisor._crew_id = "c1"
+
+        stage = make_think_result().stages[0]
+        result = supervisor.get_active_turns(stage)
+        assert result == {}
+
+
+class TestMergeStageResults:
+    def test_skips_failed_results(self):
+        supervisor = LongTaskSupervisor.__new__(LongTaskSupervisor)
+        supervisor.repo_root = Path("/tmp/test")
+        supervisor._crew_id = "c1"
+        supervisor.controller = MagicMock()
+
+        results = [MagicMock(success=False)]
+
+        # Should not raise
+        supervisor.merge_stage_results(make_think_result().stages[0], results)
+
+    def test_empty_results_does_nothing(self):
+        supervisor = LongTaskSupervisor.__new__(LongTaskSupervisor)
+        supervisor.repo_root = Path("/tmp/test")
+        supervisor._crew_id = "c1"
+        supervisor.controller = MagicMock()
+
+        supervisor.merge_stage_results(make_think_result().stages[0], [])
