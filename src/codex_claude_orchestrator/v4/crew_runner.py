@@ -164,6 +164,7 @@ class V4CrewRunner:
         events: list[dict[str, Any]] = []
         verification_failures: list[dict[str, Any]] = []
         repair_requests: list[str] = []
+        last_changes: dict[str, Any] = {}
         paths = V4Paths(repo_root=repo_root, crew_id=crew_id)
         merge_input_recorder = V4MergeInputRecorder(
             event_store=self._events,
@@ -253,6 +254,7 @@ class V4CrewRunner:
                 )
 
             changes = self._controller.changes(crew_id=crew_id, worker_id=source_worker["worker_id"])
+            last_changes = changes
             events.append({"action": "record_changes", "round": round_index, "changes": changes})
             merge_input = None
             if changes.get("changed_files"):
@@ -433,12 +435,28 @@ class V4CrewRunner:
             repair_requests.append(summary)
             events.append({"action": "challenge", "round": round_index, "summary": summary})
 
+        # Build failure context from last verification failures
+        failure_context = None
+        if verification_failures:
+            last_failed = verification_failures[-1]
+            failure_context = {
+                "last_verification": {
+                    "command": last_failed.get("command", ""),
+                    "output": last_failed.get("summary", ""),
+                    "returncode": last_failed.get("returncode", 1),
+                },
+                "affected_files": last_changes.get("changed_files", []) if last_changes else [],
+                "rounds_attempted": max_rounds,
+                "last_phase": "verifying",
+            }
+
         return {
             "crew_id": crew_id,
             "status": "max_rounds_exhausted",
             "runtime": "v4",
             "rounds": max_rounds,
             "events": events,
+            "failure_context": failure_context,
         }
 
     async def async_supervise(

@@ -750,6 +750,56 @@ async def test_async_supervise_runs_parallel_round(tmp_path: Path) -> None:
     assert subtasks[1].status == "passed"
 
 
+class TestFailureContext:
+    def test_max_rounds_exhausted_includes_failure_context_key(self, tmp_path: Path) -> None:
+        """max_rounds_exhausted return value should include failure_context key."""
+        store = SQLiteEventStore(tmp_path / "events.sqlite3")
+        controller = FakeController(
+            [
+                {"passed": False, "summary": "test failed", "command": "pytest"},
+                {"passed": False, "summary": "test still failed", "command": "pytest"},
+            ],
+            event_store=store,
+        )
+        supervisor = FakeV4Supervisor(
+            [
+                {"status": "turn_completed", "turn_id": "round-1-worker-source-source"},
+                {"status": "turn_completed", "turn_id": "round-1-worker-review-review"},
+                {"status": "turn_completed", "turn_id": "round-2-worker-source-source"},
+                {"status": "turn_completed", "turn_id": "round-2-worker-review-review"},
+            ],
+            event_store=store,
+            review_summaries=[
+                "<<<CODEX_REVIEW\nverdict: OK\nsummary: patch is reviewable\nfindings:\n>>>",
+                "<<<CODEX_REVIEW\nverdict: OK\nsummary: patch is still reviewable\nfindings:\n>>>",
+            ],
+        )
+
+        result = V4CrewRunner(
+            controller=controller,
+            supervisor=supervisor,
+            event_store=store,
+        ).supervise(
+            repo_root=tmp_path,
+            crew_id="crew-1",
+            verification_commands=["pytest"],
+            max_rounds=2,
+        )
+
+        assert result["status"] == "max_rounds_exhausted"
+        assert "failure_context" in result
+        assert result["failure_context"] is not None
+        assert "last_verification" in result["failure_context"]
+        assert "affected_files" in result["failure_context"]
+        assert "rounds_attempted" in result["failure_context"]
+        assert "last_phase" in result["failure_context"]
+        assert result["failure_context"]["rounds_attempted"] == 2
+        assert result["failure_context"]["last_phase"] == "verifying"
+        assert result["failure_context"]["last_verification"]["command"] == "pytest"
+        assert result["failure_context"]["last_verification"]["output"] == "test still failed"
+        assert result["failure_context"]["affected_files"] == ["src/app.py"]
+
+
 class TestNonDynamicPathForwardsParams:
     def test_non_dynamic_forwards_allow_dirty_base_and_seed_contract(self):
         """H1: Non-dynamic run() must forward allow_dirty_base and seed_contract."""
