@@ -32,7 +32,29 @@ def test_crew_accept():
     result = asyncio.run(server.tools["crew_accept"](crew_id="c1"))
     data = json.loads(result[0].text)
     assert data["status"] == "accepted"
-    controller.accept.assert_called_once_with(crew_id="c1")
+    controller.accept.assert_called_once_with(crew_id="c1", summary="Accepted by user")
+
+
+def test_crew_accept_passes_summary():
+    server = FakeServer()
+    controller = MagicMock()
+    controller.accept.return_value = {"status": "accepted"}
+    register_decision_tools(server, controller)
+    import asyncio
+    result = asyncio.run(server.tools["crew_accept"](crew_id="c1", summary="looks good"))
+    data = json.loads(result[0].text)
+    assert data["status"] == "accepted"
+    controller.accept.assert_called_once_with(crew_id="c1", summary="looks good")
+
+
+def test_crew_accept_default_summary():
+    server = FakeServer()
+    controller = MagicMock()
+    controller.accept.return_value = {"status": "accepted"}
+    register_decision_tools(server, controller)
+    import asyncio
+    result = asyncio.run(server.tools["crew_accept"](crew_id="c1"))
+    controller.accept.assert_called_once_with(crew_id="c1", summary="Accepted by user")
 
 
 def test_crew_accept_returns_error_on_exception():
