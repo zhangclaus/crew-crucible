@@ -39,3 +39,26 @@ class TestBuildTerminalResponse:
         result = _build_terminal_response(snap)
         assert result["status"] == "failed"
         assert result["error"] == "worker crashed"
+
+
+class TestRunnerCacheEviction:
+    def test_cache_does_not_grow_beyond_limit(self):
+        """_runner_cache should evict oldest entries when full."""
+        from codex_claude_orchestrator.mcp_server.tools import crew_run
+
+        # Save original cache
+        original_cache = crew_run._runner_cache.copy()
+        try:
+            crew_run._runner_cache.clear()
+
+            # Fill cache beyond limit
+            for i in range(20):
+                crew_run._runner_cache[f"repo-{i}"] = f"runner-{i}"
+
+            # Cache should be bounded (max 16 entries)
+            assert len(crew_run._runner_cache) <= 16, (
+                f"Cache has {len(crew_run._runner_cache)} entries, expected <= 16"
+            )
+        finally:
+            crew_run._runner_cache.clear()
+            crew_run._runner_cache.update(original_cache)

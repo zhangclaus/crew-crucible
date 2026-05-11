@@ -12,7 +12,20 @@ from mcp.types import TextContent
 from codex_claude_orchestrator.mcp_server.job_manager import JobManager, _next_poll_seconds
 
 # Per-repo runner cache to avoid rebuilding for repeated crew_run calls on the same repo.
-_runner_cache: dict[str, object] = {}
+_MAX_RUNNER_CACHE = 16
+
+
+class _BoundedRunnerCache(dict):
+    """dict subclass that evicts the oldest entry when size exceeds _MAX_RUNNER_CACHE."""
+
+    def __setitem__(self, key, value):
+        if len(self) >= _MAX_RUNNER_CACHE and key not in self:
+            oldest_key = next(iter(self))
+            del self[oldest_key]
+        super().__setitem__(key, value)
+
+
+_runner_cache: dict[str, object] = _BoundedRunnerCache()
 
 
 def _build_terminal_response(snap: dict) -> dict:
@@ -76,6 +89,10 @@ def register_run_tools(
         """
         if runner is None:
             if repo not in _runner_cache:
+                if len(_runner_cache) >= _MAX_RUNNER_CACHE:
+                    # Evict oldest entry
+                    oldest_key = next(iter(_runner_cache))
+                    del _runner_cache[oldest_key]
                 _runner_cache[repo] = _build_runner(controller, repo)
             cached_runner = _runner_cache[repo]
         else:
