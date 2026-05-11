@@ -75,6 +75,10 @@ class TestSubTaskToDict:
             "status": "pending",
             "result": None,
             "review_attempts": 0,
+            "role": "",
+            "goal": "",
+            "write_scope": [],
+            "worker_template": "targeted-code-editor",
         }
 
     def test_to_dict_with_custom_values(self) -> None:

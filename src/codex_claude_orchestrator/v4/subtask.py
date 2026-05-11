@@ -21,6 +21,11 @@ class SubTask:
     status: str = "pending"
     result: dict[str, Any] | None = None
     review_attempts: int = 0
+    # Long task extensions
+    role: str = ""
+    goal: str = ""
+    write_scope: list[str] = field(default_factory=list)
+    worker_template: str = "targeted-code-editor"
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize all fields to a plain dict."""
@@ -33,6 +38,10 @@ class SubTask:
             "status": self.status,
             "result": self.result,
             "review_attempts": self.review_attempts,
+            "role": self.role,
+            "goal": self.goal,
+            "write_scope": list(self.write_scope),
+            "worker_template": self.worker_template,
         }
 
     @classmethod
@@ -47,4 +56,8 @@ class SubTask:
             status=data.get("status", "pending"),
             result=data.get("result"),
             review_attempts=data.get("review_attempts", 0),
+            role=data.get("role", ""),
+            goal=data.get("goal", ""),
+            write_scope=data.get("write_scope", []),
+            worker_template=data.get("worker_template", "targeted-code-editor"),
         )
