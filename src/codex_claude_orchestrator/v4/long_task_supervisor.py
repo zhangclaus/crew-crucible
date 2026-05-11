@@ -367,9 +367,10 @@ class LongTaskSupervisor:
 
         worker_id = f"sub-agent-{uuid.uuid4().hex[:8]}"
         round_id = f"sub-{uuid.uuid4().hex[:8]}"
+        contract_id = f"contract-{worker_id}"
 
         contract = WorkerContract(
-            contract_id=f"contract-{worker_id}",
+            contract_id=contract_id,
             label="sub-agent",
             mission=prompt[:200],
             required_capabilities=tools or [],
@@ -390,7 +391,7 @@ class LongTaskSupervisor:
             worker_id=worker_id,
             round_id=round_id,
             phase="sub-agent",
-            contract_id=f"sub-{worker_id}",
+            contract_id=contract_id,
             message=prompt,
             expected_marker="<<<DONE",
         )
