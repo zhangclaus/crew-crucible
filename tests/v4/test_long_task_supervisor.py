@@ -649,3 +649,150 @@ class TestSpawnSubAgentCleanup:
             supervisor._spawn_sub_agent("test prompt")
 
         supervisor.controller.release_worker.assert_called_once()
+
+
+class TestSuperviseLongTaskE2E:
+    """End-to-end integration tests for the full supervise_long_task loop."""
+
+    def test_full_loop_with_pass(self, tmp_path: Path):
+        """End-to-end: load think_result -> build briefing -> review -> pass -> accept."""
+        # Setup think_result.json
+        tr = make_think_result(num_stages=1)
+        crew_dir = tmp_path / ".crew"
+        crew_dir.mkdir()
+        (crew_dir / "think_result.json").write_text(json.dumps(tr.to_dict()))
+
+        # Setup prompt templates (needed for run_reviewer even if _spawn_sub_agent is mocked)
+        prompt_dir = tmp_path / "prompts"
+        prompt_dir.mkdir()
+        (prompt_dir / "review.md").write_text(
+            'overall_goal: {overall_goal}\n'
+            'stage_goal: {stage_goal}\n'
+            'acceptance_criteria: {acceptance_criteria}\n'
+            'contract: {contract}\n'
+            'previous_summaries: {previous_summaries}\n'
+            'changed_files: {changed_files}\n'
+            'verification_commands: {verification_commands}\n'
+            '\n'
+            '```json\n'
+            '{{"verdict": "OK", "checklist": [], "quality_notes": [], "risks": [], '
+            '"suggestions": [], "contract_compliance": [], "cross_worker_issues": [], '
+            '"action": "pass", "stage_summary": "All good"}}\n'
+            '```'
+        )
+
+        # Setup mocks
+        mock_controller = MagicMock()
+        mock_supervisor = MagicMock()
+        mock_event_store = FakeEventStore()
+
+        supervisor = LongTaskSupervisor(
+            controller=mock_controller,
+            supervisor=mock_supervisor,
+            event_store=mock_event_store,
+            repo_root=tmp_path,
+            goal="test goal",
+            verification_commands=["echo ok"],
+            prompt_dir=prompt_dir,
+            crew_id="e2e-test",
+        )
+
+        # Mock sub-task execution
+        supervisor._run_sub_tasks = MagicMock(return_value=[])
+        # Mock plan_next_stage to raise (no more stages)
+        supervisor.plan_next_stage = MagicMock(side_effect=ValueError("done"))
+        # Mock _spawn_sub_agent to return a passing review
+        supervisor._spawn_sub_agent = MagicMock(return_value=json.dumps({
+            "verdict": "OK",
+            "checklist": [],
+            "quality_notes": [],
+            "risks": [],
+            "suggestions": [],
+            "contract_compliance": [],
+            "cross_worker_issues": [],
+            "action": "pass",
+            "stage_summary": "All good",
+        }))
+
+        result = supervisor.supervise_long_task()
+
+        assert result["status"] == "done"
+        assert result["total_stages"] == 1
+        mock_controller.accept.assert_called_once()
+
+        # Verify events were recorded
+        events = mock_event_store.events
+        event_types = [e["type"] for e in events]
+        assert "stage.planned" in event_types
+        assert "stage.completed" in event_types
+
+    def test_full_loop_with_challenge_then_pass(self, tmp_path: Path):
+        """End-to-end: review challenges, then passes on retry."""
+        tr = make_think_result(num_stages=1)
+        crew_dir = tmp_path / ".crew"
+        crew_dir.mkdir()
+        (crew_dir / "think_result.json").write_text(json.dumps(tr.to_dict()))
+
+        prompt_dir = tmp_path / "prompts"
+        prompt_dir.mkdir()
+        (prompt_dir / "review.md").write_text(
+            'overall_goal: {overall_goal}\n'
+            'stage_goal: {stage_goal}\n'
+            'acceptance_criteria: {acceptance_criteria}\n'
+            'contract: {contract}\n'
+            'previous_summaries: {previous_summaries}\n'
+            'changed_files: {changed_files}\n'
+            'verification_commands: {verification_commands}\n'
+            '\n'
+            '```json\n'
+            '{{"verdict": "WARN", "checklist": [], "quality_notes": [], "risks": [], '
+            '"suggestions": [], "contract_compliance": [], "cross_worker_issues": [], '
+            '"action": "challenge", "challenge_targets": [{{"worker_id": "w1", '
+            '"challenge_message": "fix this", "affected_files": []}}], '
+            '"stage_summary": "Needs fix"}}\n'
+            '```'
+        )
+
+        mock_controller = MagicMock()
+        mock_supervisor = MagicMock()
+        mock_event_store = FakeEventStore()
+
+        supervisor = LongTaskSupervisor(
+            controller=mock_controller,
+            supervisor=mock_supervisor,
+            event_store=mock_event_store,
+            repo_root=tmp_path,
+            goal="test goal",
+            verification_commands=["echo ok"],
+            prompt_dir=prompt_dir,
+            crew_id="e2e-challenge",
+        )
+
+        supervisor._run_sub_tasks = MagicMock(return_value=[])
+        supervisor.challenge_parallel_workers = MagicMock()
+        supervisor.get_active_turns = MagicMock(return_value={})
+        supervisor.get_updated_results = MagicMock(return_value=[])
+        supervisor.plan_next_stage = MagicMock(side_effect=ValueError("done"))
+
+        # First review returns challenge, second returns pass
+        supervisor._spawn_sub_agent = MagicMock(side_effect=[
+            # First call: challenge review
+            json.dumps({
+                "verdict": "WARN", "checklist": [], "quality_notes": [], "risks": [],
+                "suggestions": [], "contract_compliance": [], "cross_worker_issues": [],
+                "action": "challenge",
+                "challenge_targets": [{"worker_id": "w1", "challenge_message": "fix", "affected_files": []}],
+                "stage_summary": "Needs fix",
+            }),
+            # Second call: pass review
+            json.dumps({
+                "verdict": "OK", "checklist": [], "quality_notes": [], "risks": [],
+                "suggestions": [], "contract_compliance": [], "cross_worker_issues": [],
+                "action": "pass", "stage_summary": "Fixed",
+            }),
+        ])
+
+        result = supervisor.supervise_long_task()
+
+        assert result["status"] == "done"
+        supervisor.challenge_parallel_workers.assert_called_once()
