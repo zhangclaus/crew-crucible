@@ -488,3 +488,22 @@ class TestMergeStageResults:
         supervisor.controller = MagicMock()
 
         supervisor.merge_stage_results(make_think_result().stages[0], [])
+
+
+class TestSpawnSubAgentNoMock:
+    def test_creates_real_worker_contract(self):
+        """_spawn_sub_agent must use WorkerContract, not MagicMock."""
+        import ast
+        import inspect
+        import textwrap
+
+        source = inspect.getsource(LongTaskSupervisor._spawn_sub_agent)
+        source = textwrap.dedent(source)
+        tree = ast.parse(source)
+
+        # Walk AST looking for MagicMock usage
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name) and node.id == "MagicMock":
+                pytest.fail("_spawn_sub_agent still uses MagicMock in production code")
+            if isinstance(node, ast.Attribute) and node.attr == "MagicMock":
+                pytest.fail("_spawn_sub_agent still uses MagicMock in production code")

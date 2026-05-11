@@ -359,21 +359,28 @@ class LongTaskSupervisor:
 
         Uses supervisor.run_worker_turn for a one-shot execution.
         """
-        from unittest.mock import MagicMock
+        from codex_claude_orchestrator.crew.models import (
+            AuthorityLevel,
+            WorkerContract,
+            WorkspacePolicy,
+        )
 
         worker_id = f"sub-agent-{uuid.uuid4().hex[:8]}"
         round_id = f"sub-{uuid.uuid4().hex[:8]}"
 
+        contract = WorkerContract(
+            contract_id=f"contract-{worker_id}",
+            label="sub-agent",
+            mission=prompt[:200],
+            required_capabilities=tools or [],
+            authority_level=AuthorityLevel.READONLY,
+            workspace_policy=WorkspacePolicy.READONLY,
+        )
+
         self.controller.ensure_worker(
             repo_root=self.repo_root,
             crew_id=self._crew_id,
-            contract=MagicMock(
-                worker_id=worker_id,
-                role="sub-agent",
-                goal=prompt[:100],
-                authority_level="readonly",
-                required_capabilities=tools or [],
-            ),
+            contract=contract,
             allow_dirty_base=True,
         )
 
