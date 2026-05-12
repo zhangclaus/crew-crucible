@@ -1,0 +1,15 @@
+{
+  "name": "agent-crucible",
+  "description": "Multi-agent code review with adversarial verification for Claude Code",
+  "source": {
+    "source": "github",
+    "repo": "zhangclaus/agent-crucible"
+  },
+  "plugins": [
+    {
+      "name": "agent-crucible",
+      "description": "Multi-agent code review with adversarial verification. One agent implements, another actively tries to break it.",
+      "version": "0.1.0"
+    }
+  ]
+}
