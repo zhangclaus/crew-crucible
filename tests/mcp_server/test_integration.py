@@ -31,20 +31,21 @@ def test_server_registers_all_tool_modules():
     # Decision tools
     assert "crew_accept" in registered_names
 
-    # Deleted tools
+    # Restored tools (for supervisor mode)
+    assert "crew_spawn" in registered_names
+    assert "crew_stop_worker" in registered_names
+    assert "crew_challenge" in registered_names
+    assert "crew_observe" in registered_names
+    assert "crew_changes" in registered_names
+    assert "crew_diff" in registered_names
+
+    # Deleted tools (not restored)
     assert "crew_start" not in registered_names
     assert "crew_stop" not in registered_names
     assert "crew_status" not in registered_names
-    assert "crew_spawn" not in registered_names
-    assert "crew_stop_worker" not in registered_names
-    assert "crew_challenge" not in registered_names
-    assert "crew_run" not in registered_names
     assert "crew_decide" not in registered_names
     assert "crew_blackboard" not in registered_names
     assert "crew_events" not in registered_names
-    assert "crew_observe" not in registered_names
-    assert "crew_changes" not in registered_names
-    assert "crew_diff" not in registered_names
 
 
 def test_server_no_tools_when_no_controller():
