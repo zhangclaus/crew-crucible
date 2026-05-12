@@ -91,6 +91,10 @@ def register_run_tools(
             long_task: Enable long task mode with multi-stage execution
                 (default False). When True, delegates to LongTaskSupervisor.
         """
+        # Clamp resource limits
+        max_workers = min(max(int(max_workers), 1), 5)
+        max_rounds = min(max(int(max_rounds), 1), 10)
+
         if runner is None:
             if repo not in _runner_cache:
                 if len(_runner_cache) >= _MAX_RUNNER_CACHE:

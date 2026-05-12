@@ -44,11 +44,24 @@ class PolicyGate:
 
         for path in paths:
             normalized = path[2:] if path.startswith("./") else path
+            # Resolve to normalize ../ sequences
+            try:
+                resolved = Path(path).resolve()
+            except (ValueError, OSError):
+                resolved = None
             if any(
                 normalized == protected.rstrip("/") or normalized.startswith(protected)
                 for protected in self._protected_paths
             ):
                 return PolicyDecision(allowed=False, reason=f"protected path blocked: {path}")
+            # Check resolved path against protected paths
+            if resolved is not None:
+                resolved_str = str(resolved)
+                if any(
+                    resolved_str.endswith("/" + protected.rstrip("/")) or resolved_str == protected.rstrip("/")
+                    for protected in self._protected_paths
+                ):
+                    return PolicyDecision(allowed=False, reason=f"protected path blocked: {path}")
 
         return PolicyDecision(allowed=True, reason=None)
 

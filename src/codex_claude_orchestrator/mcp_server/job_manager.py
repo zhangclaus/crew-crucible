@@ -61,6 +61,9 @@ def _next_poll_seconds(job: Job) -> int:
     return 60
 
 
+_MAX_CONCURRENT_JOBS = 8
+
+
 class JobManager:
     def __init__(self) -> None:
         self._jobs: dict[str, Job] = {}
@@ -84,6 +87,10 @@ class JobManager:
         """Create a job, start background thread, return job_id."""
         if self._shutdown_event.is_set():
             raise RuntimeError("JobManager is shutting down, cannot create new jobs")
+        with self._lock:
+            running = sum(1 for j in self._jobs.values() if j.completed_at is None)
+            if running >= _MAX_CONCURRENT_JOBS:
+                raise RuntimeError(f"too many concurrent jobs ({running}/{_MAX_CONCURRENT_JOBS})")
 
         job_id = f"job-{uuid.uuid4().hex[:8]}"
         job = Job(

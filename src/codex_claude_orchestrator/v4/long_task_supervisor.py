@@ -573,11 +573,9 @@ class LongTaskSupervisor:
         """Run final verification commands."""
         if not self.verification_commands:
             return
+        from codex_claude_orchestrator.verification.safe_runner import run_verified_command
         for command in self.verification_commands:
-            result = subprocess.run(
-                command, shell=True, cwd=self.repo_root,
-                capture_output=True, text=True, timeout=300,
-            )
+            result = run_verified_command(command, self.repo_root, timeout=300)
             if result.returncode == 0:
                 self.event_store.append(
                     stream_id=self._crew_id or "crew-long-task",

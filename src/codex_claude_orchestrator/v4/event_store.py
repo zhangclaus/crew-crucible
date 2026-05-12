@@ -18,6 +18,7 @@ SQLITE_SCHEMA_MIGRATIONS = [
     {"version": 1, "checksum": "sqlite_events_v1"},
     {"version": 2, "checksum": "sqlite_events_round_contract_v2"},
 ]
+_MAX_EVENTS_PER_CREW = 5000
 SQLITE_REQUIRED_COLUMNS = [
     "event_id",
     "stream_id",
@@ -73,6 +74,13 @@ class SQLiteEventStore:
         created_at: str = "",
     ) -> AgentEvent:
         with self._write_transaction() as conn:
+            if crew_id:
+                count = conn.execute(
+                    "SELECT COUNT(*) FROM events WHERE crew_id = ?", (crew_id,)
+                ).fetchone()[0]
+                if count >= _MAX_EVENTS_PER_CREW:
+                    raise RuntimeError(f"crew {crew_id} exceeded {_MAX_EVENTS_PER_CREW} events")
+
             if idempotency_key:
                 existing = self._get_by_idempotency_key(conn, idempotency_key)
                 if existing is not None:
@@ -438,7 +446,12 @@ class SQLiteEventStore:
         )
 
 
+_VALID_TABLES = {"events"}
+
+
 def _sqlite_columns(conn: sqlite3.Connection, table_name: str) -> list[str]:
+    if table_name not in _VALID_TABLES:
+        raise ValueError(f"invalid table name: {table_name}")
     return [row["name"] for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()]
 
 

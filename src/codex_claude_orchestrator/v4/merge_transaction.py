@@ -297,7 +297,10 @@ class V4MergeTransaction:
                 continue
             changes = json.loads((artifact_root / artifact).read_text(encoding="utf-8"))
             diff_artifact = changes.get("diff_artifact", "")
-            patch = (artifact_root / diff_artifact).read_text(encoding="utf-8") if diff_artifact else ""
+            if diff_artifact and not _safe_relative_path(diff_artifact):
+                patch = ""
+            else:
+                patch = (artifact_root / diff_artifact).read_text(encoding="utf-8") if diff_artifact else ""
             patch_paths = _patch_paths(patch)
             patches.append(
                 WorkerPatch(

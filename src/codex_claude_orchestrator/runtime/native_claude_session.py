@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shlex
 import shutil
 import subprocess
@@ -11,6 +12,21 @@ from uuid import uuid4
 
 
 TmuxRunner = Callable[..., CompletedProcess[str]]
+
+
+def _safe_session_name(worker_id: str) -> str:
+    """Sanitize worker_id for use as tmux session name."""
+    safe = re.sub(r"[^a-zA-Z0-9_-]", "_", worker_id)
+    return f"crew-{safe}-{uuid4().hex[:8]}"
+
+
+def _escape_turn_markers(message: str) -> str:
+    """Prevent injection of fake completion markers."""
+    return (
+        message
+        .replace("<<<CODEX_TURN_DONE", "[MARKER_ESCAPED]")
+        .replace("<<<WORKER_TURN_DONE", "[MARKER_ESCAPED]")
+    )
 
 
 class NativeClaudeSession:
@@ -27,7 +43,7 @@ class NativeClaudeSession:
         self._tmux = tmux or shutil.which("tmux") or "tmux"
         self._runner = runner or subprocess.run
         self._terminal_runner = terminal_runner or subprocess.run
-        self._session_name_factory = session_name_factory or (lambda worker_id: f"crew-{worker_id}-{uuid4().hex[:8]}")
+        self._session_name_factory = session_name_factory or _safe_session_name
         self._turn_marker = turn_marker
         self._open_terminal_on_start = open_terminal_on_start
 
@@ -59,8 +75,9 @@ class NativeClaudeSession:
 
     def send(self, *, terminal_pane: str, message: str, turn_marker: str | None = None) -> dict:
         marker = turn_marker or self._turn_marker
+        safe_message = _escape_turn_markers(message)
         full_message = (
-            f"{message}\n\n"
+            f"{safe_message}\n\n"
             f"When this turn is complete, print exactly: {marker}\n"
             "This turn marker overrides any earlier completion marker."
         )
@@ -104,7 +121,7 @@ class NativeClaudeSession:
         return {"active_sessions": sorted(active_sessions), "pruned_sessions": pruned_sessions}
 
     def attach(self, *, terminal_session: str) -> dict:
-        return {"attach_command": f"{self._tmux} attach -t {terminal_session}"}
+        return {"attach_command": f"{self._tmux} attach -t {shlex.quote(terminal_session)}"}
 
     def _open_terminal(self, terminal_session: str) -> None:
         shell_command = shlex.join([self._tmux, "attach", "-t", terminal_session])

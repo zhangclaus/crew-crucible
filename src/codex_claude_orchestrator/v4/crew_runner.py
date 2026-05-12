@@ -629,6 +629,7 @@ class V4CrewRunner:
         verdict, source_events = self._parse_review_verdict(
             crew_id=crew_id,
             turn_id=turn_result["turn_id"],
+            source_worker_id=source_worker["worker_id"],
         )
         review_event = self._append_review_completed(
             crew_id=crew_id,
@@ -875,11 +876,13 @@ class V4CrewRunner:
             artifact_refs=verdict.evidence_refs,
         )
 
-    def _parse_review_verdict(self, *, crew_id: str, turn_id: str) -> tuple[ReviewVerdict, list[AgentEvent]]:
+    def _parse_review_verdict(self, *, crew_id: str, turn_id: str, source_worker_id: str = "") -> tuple[ReviewVerdict, list[AgentEvent]]:
         source_events = [
             event
             for event in self._events.list_by_turn(turn_id)
-            if event.crew_id == crew_id and event.type == "worker.outbox.detected"
+            if event.crew_id == crew_id
+            and event.type == "worker.outbox.detected"
+            and (not source_worker_id or event.worker_id != source_worker_id)
         ]
         latest = source_events[-1] if source_events else None
         if latest is None:

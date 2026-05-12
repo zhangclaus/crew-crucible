@@ -35,6 +35,11 @@ class WorktreeManager:
         self._runner = runner or subprocess.run
         self._branch_name_factory = branch_name_factory or self._default_branch_name
 
+    @staticmethod
+    def _validate_segment(segment: str, label: str) -> None:
+        if not segment or ".." in segment or "/" in segment or "\\" in segment:
+            raise ValueError(f"invalid {label}: {segment!r}")
+
     def prepare(
         self,
         *,
@@ -43,6 +48,8 @@ class WorktreeManager:
         worker_id: str,
         allow_dirty_base: bool = False,
     ) -> WorkspaceAllocation:
+        self._validate_segment(crew_id, "crew_id")
+        self._validate_segment(worker_id, "worker_id")
         repo_root = repo_root.resolve()
         self._ensure_git_repo(repo_root)
         dirty = self._git(["status", "--porcelain"], cwd=repo_root).stdout.strip()
@@ -140,6 +147,8 @@ class WorktreeManager:
         manifest_path.write_text("\n".join(untracked) + ("\n" if untracked else ""), encoding="utf-8")
         for relative_path in untracked:
             source = repo_root / relative_path
+            if source.is_symlink():
+                continue
             destination = worktree_path / relative_path
             if source.is_file():
                 destination.parent.mkdir(parents=True, exist_ok=True)

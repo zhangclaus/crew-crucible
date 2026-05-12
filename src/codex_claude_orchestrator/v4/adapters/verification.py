@@ -4,6 +4,7 @@ import shlex
 import subprocess
 from pathlib import Path
 
+from codex_claude_orchestrator.core.policy_gate import PolicyGate
 from codex_claude_orchestrator.v4.artifacts import ArtifactStore
 
 
@@ -24,9 +25,11 @@ class VerificationAdapter:
                     stderr="command setup failed: empty command\n",
                 )
 
+            PolicyGate().guard_command(argv)
             argv = self._resolve_repo_relative_executable(argv, cwd)
             result = subprocess.run(
                 argv,
+                shell=False,
                 cwd=cwd,
                 text=True,
                 capture_output=True,

@@ -69,6 +69,7 @@ class CrewVerificationRunner:
 
         result = self._runner(
             argv,
+            shell=False,
             cwd=verification_cwd,
             capture_output=True,
             text=True,
