@@ -20,7 +20,8 @@ def test_crew_verify_registered():
     controller = MagicMock()
     register_lifecycle_tools(server, controller)
     assert "crew_verify" in server.tools
-    assert len(server.tools) == 1
+    assert "crew_spawn" in server.tools
+    assert len(server.tools) == 2
 
 
 def test_crew_verify_success():
@@ -77,3 +78,42 @@ def test_crew_verify_returns_error_on_generic_exception():
     data = json.loads(result[0].text)
     assert "error" in data
     assert "internal:" in data["error"]
+
+
+class TestCrewSpawn:
+    def test_crew_spawn_with_template(self):
+        """crew_spawn should create a worker using a predefined template."""
+        server = FakeServer()
+        controller = MagicMock()
+        controller.ensure_worker.return_value = {"worker_id": "w1", "contract_id": "c1"}
+        register_lifecycle_tools(server, controller)
+
+        import asyncio
+        result = asyncio.run(server.tools["crew_spawn"](
+            repo="/tmp/test",
+            crew_id="crew-1",
+            label="targeted-code-editor",
+            mission="Implement auth module",
+        ))
+
+        response = json.loads(result[0].text)
+        assert response["worker_id"] == "w1"
+        controller.ensure_worker.assert_called_once()
+
+    def test_crew_spawn_with_custom_label(self):
+        """crew_spawn should create a worker with custom label when no template matches."""
+        server = FakeServer()
+        controller = MagicMock()
+        controller.ensure_worker.return_value = {"worker_id": "w2", "contract_id": "c2"}
+        register_lifecycle_tools(server, controller)
+
+        import asyncio
+        result = asyncio.run(server.tools["crew_spawn"](
+            repo="/tmp/test",
+            crew_id="crew-1",
+            label="custom-role",
+            mission="Do something custom",
+        ))
+
+        response = json.loads(result[0].text)
+        assert response["worker_id"] == "w2"
