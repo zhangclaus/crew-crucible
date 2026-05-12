@@ -9,10 +9,26 @@ Multi-agent code review with adversarial verification for Claude Code.
 3. The implementer must defend against challenges
 4. This cycle repeats until verification passes
 
+## IMPORTANT: When to Use Adversarial Verification
+
+**You MUST use `crew_run()` for these tasks:**
+- Implementing new features
+- Fixing bugs
+- Code review
+- Security audit
+- Refactoring with behavioral changes
+
+**You can do directly (without crew_run):**
+- Cleaning up redundant code
+- Querying information
+- Reading files
+- Simple formatting changes
+
 ## Available Tools
 
 ### Core Tools (Default Mode)
 - `crew_run(repo, goal)` — Start adversarial review
+- `crew_run(repo, goal, verification_commands=["pytest"])` — With verification
 - `crew_job_status(job_id)` — Poll job status
 - `crew_cancel(job_id)` — Cancel a running job
 - `crew_verify(crew_id, command)` — Run verification command
@@ -32,17 +48,28 @@ Multi-agent code review with adversarial verification for Claude Code.
 
 ## Usage
 
-### Basic Review (Recommended)
-```
-crew_run(repo="/path/to/project", goal="Add user authentication")
-```
-
-### With Verification Command
+### Implement Feature (MUST use crew_run)
 ```
 crew_run(repo="/path/to/project", goal="Add user authentication", verification_commands=["pytest"])
+```
+
+### Fix Bug (MUST use crew_run)
+```
+crew_run(repo="/path/to/project", goal="Fix login validation error", verification_commands=["pytest"])
+```
+
+### Code Review (MUST use crew_run)
+```
+crew_run(repo="/path/to/project", goal="Review authentication module for security issues")
+```
+
+### Clean Up (Can do directly)
+```
+Just do it directly, no need for crew_run()
 ```
 
 ## Notes
 
 - **Default mode** uses V4CrewRunner Python loop (stable, recommended)
 - **Supervisor mode** (`supervisor_mode=True`) is experimental and not recommended for production use
+- **Always use crew_run() for implementation tasks** to trigger adversarial verification
