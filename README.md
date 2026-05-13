@@ -15,32 +15,43 @@ Agent Crucible solves this by pitting multiple specialized agents against each o
 ![Architecture Flow](liuchengtu.png)
 
 ```
-User → crew_run(repo, goal) → MCP Server
-                                    │
-                    ┌───────────────┼───────────────┐
-                    ▼               ▼               ▼
-              Worker (tmux)   Worker (tmux)   Worker (tmux)
-              [implementer]   [reviewer]      [explorer]
-                    │               │               │
-                    └───────┬───────┘               │
-                            ▼                       │
-                    Adversarial Review ◄────────────┘
-                            │
-                    challenge/repair loop (up to 3 rounds)
-                            │
-                            ▼
-                    Verification (pytest, etc.)
-                            │
-                            ▼
-                    Merge → Done
+User → Agent (Codex / Claude Code / Cursor / ...) → crew_run(repo, goal)
+                                                           │
+                                                 ┌─────────┴─────────┐
+                                                 │   MCP Server       │
+                                                 │   (pure infra)     │
+                                                 └─────────┬─────────┘┘
+                                                           │
+                                            ┌──────────────┴──────────────┐
+                                            ▼                             ▼
+                                     Default Mode                   Long Task Mode
+                                 (V4CrewRunner)                 (LongTaskSupervisor)
+                                            │                             │
+                                 ┌──────────┼──────────┐     ┌───────────┼───────────┐
+                                 ▼          ▼          ▼     ▼           ▼           ▼
+                              Worker     Worker     Worker  Think    PlanAdversary  Do
+                           [implement] [reviewer] [explorer]  │           │     (N stages)
+                                 │          │          │      ▼           ▼        │
+                                 └────┬─────┘          │  brainstorm  validate    │
+                                      ▼                │  & plan      plan       │
+                               Adversarial Review ◄────┘                         │
+                                      │                                     ┌────┴────┐
+                               challenge/repair                              ▼         ▼
+                               (up to N rounds)                           Worker    Worker
+                                      │                                  per stage
+                                      ▼                                      │
+                                 Verification ◄──────────────────────────────┘
+                                      │
+                                      ▼
+                                 Merge → Done
 ```
 
-1. **User** sends a task request (e.g. "Add user registration with email verification")
-2. **MCP Server** spawns specialized workers in isolated git worktrees
-3. **Workers** execute their roles — implementer writes code, explorer maps the codebase, reviewer attacks
-4. **Adversarial loop** — reviewer finds issues, emits targeted challenges, implementer fixes and proves the fix works
-5. **Verification** — automated tests run; failures trigger more challenge rounds
-6. **Merge** — verified changes merge into the main branch
+**Outer layer** — the orchestrator agent (Codex, Claude Code, Cursor, or any MCP client) decides when to call `crew_run` and interprets results. Agent Crucible doesn't replace the agent — it extends it with adversarial verification.
+
+**Inner layer** — the MCP Server runs workers in isolated tmux sessions and git worktrees:
+
+- **Default mode** — spawn implementer + reviewer, run adversarial loop with verification rounds
+- **Long task mode** — multi-stage execution: brainstorm the plan, validate with an adversarial planner, then execute stages with parallel workers, each with its own review/verify cycle
 
 ## Why Multiple Agents?
 
