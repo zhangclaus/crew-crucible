@@ -36,7 +36,7 @@ acr-mcp = "codex_claude_orchestrator.mcp_server.__main__:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-codex_claude_orchestrator = ["agent_packs/builtin/capabilities/*.md", "agent_packs/builtin/protocols/*.md"]
+codex_claude_orchestrator = ["agent_packs/builtin/capabilities/*.md", "agent_packs/builtin/protocols/*.md", "skills/*.md"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

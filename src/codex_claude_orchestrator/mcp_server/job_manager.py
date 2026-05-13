@@ -21,6 +21,7 @@ class Job:
     result: dict[str, Any] | None = None
     error: str | None = None
     cancel_event: threading.Event = field(default_factory=threading.Event)
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     thread: threading.Thread | None = None
     completed_at: float | None = None
     subtasks: list[dict[str, Any]] | None = None  # parallel mode subtask tracking
@@ -370,17 +371,21 @@ def _start_supervisor_agent(
     job_manager: "JobManager",
 ) -> None:
     """Start a Claude CLI supervisor agent that directly controls workers via MCP tools."""
+    import importlib.resources
+    import json
     import shutil
+    import shlex
     import subprocess
 
     claude = shutil.which("claude") or "claude"
     tmux = shutil.which("tmux") or "tmux"
 
-    # Build the supervisor prompt
-    skill_path = Path(__file__).parent.parent.parent.parent / "skills" / "orchestration-default.md"
-    if skill_path.exists():
-        skill_content = skill_path.read_text()
-    else:
+    # Bug 3 fix: load skill from package resources
+    try:
+        skill_content = importlib.resources.files(
+            "codex_claude_orchestrator.skills"
+        ).joinpath("orchestration-default.md").read_text(encoding="utf-8")
+    except (FileNotFoundError, ModuleNotFoundError):
         skill_content = "You are a crew supervisor. Coordinate worker agents to complete the task."
 
     prompt = (
@@ -394,11 +399,67 @@ def _start_supervisor_agent(
         f"When the task is complete, call crew_accept(crew_id='{crew_id}') and report the result."
     )
 
-    # Start Claude CLI in tmux
+    # Bug 2 fix: write prompt to temp file to avoid shell injection
+    prompt_dir = repo_root / ".orchestrator"
+    prompt_dir.mkdir(exist_ok=True)
+    prompt_path = prompt_dir / f"supervisor-prompt-{job_id}.txt"
+    prompt_path.write_text(prompt, encoding="utf-8")
+
+    # Bug 1 fix: pass .mcp.json to claude CLI so it has MCP tools
+    mcp_config = repo_root / ".mcp.json"
     session = f"crew-supervisor-{job_id}"
 
+    # Build claude command
+    claude_cmd = [claude, "--dangerously-skip-permissions"]
+    if mcp_config.exists():
+        claude_cmd.extend(["--mcp-config", str(mcp_config)])
+    claude_cmd.extend(["-p", f"$(cat {shlex.quote(str(prompt_path))})"])
+
+    # Bug 6 fix: start tmux session and open Terminal.app
     subprocess.run([tmux, "new-session", "-d", "-s", session, "-c", str(repo_root)], check=False)
     subprocess.run(
-        [tmux, "send-keys", "-t", f"{session}:0", f"claude '{prompt}'", "C-m"],
+        [tmux, "send-keys", "-t", f"{session}:0", shlex.join(claude_cmd), "C-m"],
         check=False,
     )
+
+    # Open Terminal.app and attach to tmux session
+    shell_command = shlex.join([tmux, "attach", "-t", session])
+    subprocess.run([
+        "osascript",
+        "-e", 'tell application "Terminal"',
+        "-e", "activate",
+        "-e", f"do script {json.dumps(shell_command, ensure_ascii=False)}",
+        "-e", "end tell",
+    ], check=False)
+
+    # Bug 4+5 fix: poll tmux session for completion with cancel support
+    job = job_manager._jobs[job_id]
+
+    def _poll_supervisor_loop() -> None:
+        while True:
+            if job.cancel_event.is_set():
+                subprocess.run([tmux, "kill-session", "-t", session], check=False)
+                # Clean up prompt file
+                prompt_path.unlink(missing_ok=True)
+                with job._lock:
+                    job.status = "cancelled"
+                    job.phase = "idle"
+                    job.completed_at = time.monotonic()
+                return
+            result = subprocess.run(
+                [tmux, "has-session", "-t", session],
+                capture_output=True, check=False,
+            )
+            if result.returncode != 0:
+                # tmux session ended
+                prompt_path.unlink(missing_ok=True)
+                with job._lock:
+                    if job.status != "cancelled":
+                        job.status = "done"
+                    job.phase = "idle"
+                    job.completed_at = time.monotonic()
+                return
+            time.sleep(5)
+
+    poll_thread = threading.Thread(target=_poll_supervisor_loop, daemon=True, name=f"supervisor-poll-{job_id}")
+    poll_thread.start()
