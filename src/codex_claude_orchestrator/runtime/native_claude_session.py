@@ -42,7 +42,7 @@ class NativeClaudeSession:
         runner: TmuxRunner | None = None,
         terminal_runner: TmuxRunner | None = None,
         session_name_factory: Callable[[str], str] | None = None,
-        turn_marker: str = "<<<CODEX_TURN_DONE status=ready_for_codex>>>",
+        turn_marker: str = "<<<WORKER_TURN_DONE>>>",
         open_terminal_on_start: bool = False,
     ):
         self._tmux = tmux or shutil.which("tmux") or "tmux"
@@ -78,7 +78,8 @@ class NativeClaudeSession:
         # Create tmux session and launch wrapper script
         self._tmux_run(["new-session", "-d", "-s", session, "-c", str(repo_root), "-n", "claude"])
         wrapper = _wrapper_script_path()
-        self._tmux_run(["send-keys", "-t", pane, f"{wrapper} {work_dir}", "C-m"])
+        command = f'bash -c "{shlex.quote(str(wrapper))} {shlex.quote(str(work_dir))}"'
+        self._tmux_run(["send-keys", "-t", pane, command, "C-m"])
         if self._open_terminal_on_start:
             self._open_terminal(session)
         return {
@@ -95,12 +96,12 @@ class NativeClaudeSession:
         safe_message = _escape_turn_markers(message)
 
         if work_dir is not None:
-            # New protocol: write task to .inbox/task.md, trigger wrapper
+            # New protocol: write task to .inbox/task.md, re-launch wrapper
             work_dir = Path(work_dir)
             task_path = work_dir / ".inbox" / "task.md"
             task_path.write_text(safe_message, encoding="utf-8")
-            # Send a newline to the running claude session to trigger re-read
-            trigger = f"cat {work_dir / '.inbox' / 'task.md'}"
+            wrapper = _wrapper_script_path()
+            trigger = f'bash -c "{shlex.quote(str(wrapper))} {shlex.quote(str(work_dir))}"'
             self._tmux_run(["send-keys", "-t", terminal_pane, trigger, "C-m"])
             return {"message": safe_message, "marker": marker}
 
@@ -128,10 +129,7 @@ class NativeClaudeSession:
                     return {"snapshot": "", "marker_seen": True, "marker": marker, "result": result_data}
                 except (json.JSONDecodeError, OSError):
                     pass
-            # No result yet — fall back to tmux pane capture for legacy marker detection
-            result = self._tmux_run(["capture-pane", "-p", "-t", terminal_pane, "-S", f"-{lines}"])
-            snapshot = result.stdout
-            return {"snapshot": snapshot, "marker_seen": marker in snapshot, "marker": marker}
+            return {"snapshot": "", "marker_seen": False, "marker": marker, "result": None}
 
         # Legacy behavior: tmux pane capture
         result = self._tmux_run(["capture-pane", "-p", "-t", terminal_pane, "-S", f"-{lines}"])
