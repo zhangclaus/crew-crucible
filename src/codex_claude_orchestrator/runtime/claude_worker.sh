@@ -77,30 +77,29 @@ This line tells the orchestrator that you have finished your turn and the result
 Do NOT print this line until `.outbox/result.json` has been fully written and flushed.
 SYSTEM_PROMPT_EOF
 
-# --- Build the initial user message from inbox files ---
-INITIAL_MESSAGE="You are a worker agent. Your working directory is: $WORK_DIR"
+# --- Build the initial user message in a temp file ---
+# Using a temp file avoids shell injection from mission/task file contents.
+MSG_FILE=$(mktemp)
+trap 'rm -f "$MSG_FILE"' EXIT
+
+printf '%s\n' "You are a worker agent. Your working directory is: $WORK_DIR" > "$MSG_FILE"
 
 if [[ -f "$WORK_DIR/.inbox/mission.md" ]]; then
-    INITIAL_MESSAGE="$INITIAL_MESSAGE
-
-## Mission Context
-$(cat "$WORK_DIR/.inbox/mission.md")"
+    printf '\n%s\n' "## Mission Context" >> "$MSG_FILE"
+    cat "$WORK_DIR/.inbox/mission.md" >> "$MSG_FILE"
 fi
 
 if [[ -f "$WORK_DIR/.inbox/task.md" ]]; then
-    INITIAL_MESSAGE="$INITIAL_MESSAGE
-
-## Your Task
-$(cat "$WORK_DIR/.inbox/task.md")"
+    printf '\n%s\n' "## Your Task" >> "$MSG_FILE"
+    cat "$WORK_DIR/.inbox/task.md" >> "$MSG_FILE"
 fi
 
-INITIAL_MESSAGE="$INITIAL_MESSAGE
-
-Please complete your task following the file protocol described in the system prompt. When done, write your result to .outbox/result.json and print <<<WORKER_TURN_DONE>>>."
+printf '\n%s\n' "Please complete your task following the file protocol described in the system prompt. When done, write your result to .outbox/result.json and print <<<WORKER_TURN_DONE>>>." >> "$MSG_FILE"
 
 # --- Launch Claude Code CLI ---
-# Read the system prompt for --system-prompt flag
+# Read system prompt and message from files to avoid shell interpretation
 SYSTEM_PROMPT=$(cat "$SYSTEM_PROMPT_FILE")
+INITIAL_MESSAGE=$(cat "$MSG_FILE")
 
 exec claude \
     --dangerously-skip-permissions \
